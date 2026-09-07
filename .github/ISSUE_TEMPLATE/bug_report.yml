@@ -1,0 +1,18 @@
+name: Ошибка
+description: Воспроизводимая ошибка без API-ключей и личных данных
+title: '[Bug] '
+body:
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Как воспроизвести
+      description: Версия приложения, Android, провайдер/протокол, шаги и ожидаемый результат. Не вставляйте ключи или личную переписку.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактический результат
+      description: Укажите безопасную категорию ошибки и HTTP-код, если доступны.
+    validations:
+      required: true

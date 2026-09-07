@@ -1,0 +1,13 @@
+{
+  "id": "example-local",
+  "name": "Local OpenAI-compatible",
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "protocol": "CHAT_COMPLETIONS",
+  "icon": "✦",
+  "endpoint": "chat/completions",
+  "modelsEndpoint": "models",
+  "timeoutSeconds": 120,
+  "streaming": true,
+  "allowLocalHttp": false,
+  "sendStreamUsage": false
+}

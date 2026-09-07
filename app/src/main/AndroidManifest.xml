@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:name=".AstraApplication" android:allowBackup="false"
+        android:label="@string/app_name" android:icon="@drawable/ic_astra"
+        android:theme="@style/Theme.Astra" android:supportsRtl="true"
+        android:usesCleartextTraffic="true" tools:ignore="UnusedAttribute">
+        <!-- TransportPolicy rejects cleartext unless user consent AND a local literal address.
+             Dynamic user-selected local hosts cannot be represented by static domain-config. -->
+        <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

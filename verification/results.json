@@ -1,0 +1,37 @@
+[
+  {
+    "command": "python3 tools/check_source.py",
+    "exit_code": 0,
+    "log": "verification/01-check_source.py.log"
+  },
+  {
+    "command": "bash tools/offline-checks.sh",
+    "exit_code": 0,
+    "log": "verification/02-offline-checks.sh.log"
+  },
+  {
+    "command": "./gradlew test",
+    "exit_code": 1,
+    "log": "verification/03-test.log"
+  },
+  {
+    "command": "./gradlew lint",
+    "exit_code": 1,
+    "log": "verification/04-lint.log"
+  },
+  {
+    "command": "./gradlew detektCheck",
+    "exit_code": 1,
+    "log": "verification/05-detektCheck.log"
+  },
+  {
+    "command": "./gradlew assembleDebug",
+    "exit_code": 1,
+    "log": "verification/06-assembleDebug.log"
+  },
+  {
+    "command": "./gradlew assembleRelease",
+    "exit_code": 1,
+    "log": "verification/07-assembleRelease.log"
+  }
+]

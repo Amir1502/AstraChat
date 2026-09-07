@@ -1,0 +1,178 @@
+name: Android
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android Platform & Build Tools
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-37.0" "platforms;android-36" "build-tools;36.0.0" || sdkmanager "platforms;android-37" "build-tools;36.0.0" || true
+          if [ -d "$ANDROID_HOME/platforms/android-37.0" ] && [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37" || true
+          fi
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Source policy and offline production checks
+        run: |
+          chmod +x gradlew
+          python3 tools/check_source.py
+          bash tools/offline-checks.sh
+      - name: Static analysis
+        run: ./gradlew detektCheck --stacktrace
+      - name: Unit tests
+        run: ./gradlew test --stacktrace
+      - name: Android Lint
+        run: ./gradlew lint --stacktrace
+      - name: Debug APK
+        run: |
+          ./gradlew assembleDebug --stacktrace
+          mkdir -p dist
+          VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/AstraChat-v${VERSION}-debug-universal.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AstraChat-debug-${{ github.run_number }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AstraChat-reports-${{ github.run_number }}
+          path: |
+            app/build/reports/
+            core/build/reports/
+            build/reports/
+          if-no-files-found: warn
+  device-tests:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 35]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android Platform & Build Tools
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-37.0" "platforms;android-36" "build-tools;36.0.0" || sdkmanager "platforms;android-37" "build-tools;36.0.0" || true
+          if [ -d "$ANDROID_HOME/platforms/android-37.0" ] && [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37" || true
+          fi
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          disable-animations: true
+          script: bash ./gradlew connectedDebugAndroidTest --stacktrace
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AstraChat-device-tests-api${{ matrix.api }}-${{ github.run_number }}
+          path: app/build/reports/androidTests/
+          if-no-files-found: warn
+  release:
+    needs: [verify, device-tests]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android Platform & Build Tools
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-37.0" "platforms;android-36" "build-tools;36.0.0" || sdkmanager "platforms;android-37" "build-tools;36.0.0" || true
+          if [ -d "$ANDROID_HOME/platforms/android-37.0" ] && [ ! -d "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37" || true
+          fi
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Validate release version
+        run: |
+          VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
+          test "$RELEASE_TAG" = "v$VERSION"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Prepare optional signing
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            umask 077
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/astra-signing.jks"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/astra-signing.jks" >> "$GITHUB_ENV"
+          else
+            echo 'Signing secrets are absent or incomplete; building explicitly unsigned APK.'
+          fi
+      - name: Build and name release APK
+        run: |
+          bash ./gradlew assembleRelease --stacktrace
+          mkdir -p dist
+          if [ -n "${ANDROID_KEYSTORE_PATH:-}" ]; then
+            cp app/build/outputs/apk/release/app-release.apk "dist/AstraChat-v${APP_VERSION}-universal.apk"
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk "dist/AstraChat-v${APP_VERSION}-universal-unsigned.apk"
+          fi
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AstraChat-release-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            APK universal: no ABI filtering and no bundled native inference engine.
+            An APK ending in -unsigned.apk is NOT installable until signed.
+            No claim of signing is made when signing secrets are missing.
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/astra-signing.jks"

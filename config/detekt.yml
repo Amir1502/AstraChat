@@ -1,0 +1,19 @@
+build:
+  maxIssues: 0
+config:
+  validation: true
+  warningsAsErrors: true
+potential-bugs:
+  active: true
+  DuplicateCaseInWhenExpression:
+    active: true
+  EqualsAlwaysReturnsTrueOrFalse:
+    active: true
+  InvalidRange:
+    active: true
+  UnreachableCode:
+    active: true
+  UselessPostfixExpression:
+    active: true
+  UnsafeCallOnNullableType:
+    active: true
