@@ -23,6 +23,9 @@ class AstraViewModelTest {
         `when`(repo.usage).thenReturn(flowOf(emptyList()))
         `when`(store.settings).thenReturn(flowOf(AppSettings()))
         `when`(dao.allChats()).thenReturn(emptyList())
+        `when`(dao.messages(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(dao.draft(anyString())).thenReturn(null)
+        `when`(dao.chat(anyString())).thenReturn(null)
         `when`(repo.createChat("openai", "")).thenReturn("chat-1")
         val vm = AstraViewModel(repo, vault, store, api)
         try {
