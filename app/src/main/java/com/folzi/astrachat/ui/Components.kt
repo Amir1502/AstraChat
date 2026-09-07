@@ -66,10 +66,11 @@ fun Markdown(text: String, scale: Float) {
     val foreground = MaterialTheme.colorScheme.onSurface.toArgb()
     val link = MaterialTheme.colorScheme.primary.toArgb()
     val markwon = remember(context) {
-        Markwon.builder(context)
-            .usePlugin(TablePlugin.create(context))
-            .usePlugin(StrikethroughPlugin.create())
-            .build()
+        Markwon.builder(context).usePlugin(TablePlugin.create(context)).usePlugin(StrikethroughPlugin.create())
+            .linkResolver { view, href ->
+                val uri = Uri.parse(href)
+                if (uri.scheme in setOf("https", "http")) runCatching { view.context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+            }.build()
     }
     val segments = remember(text) { splitCode(text) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -88,7 +89,7 @@ fun Markdown(text: String, scale: Float) {
                     }
                 }
             } else if (segment.text.isNotEmpty()) {
-                AndroidView(factory = { ctx -> TextView(ctx).apply { setTextIsSelectable(true); setPadding(0, 0, 0, 0); movementMethod = android.text.method.LinkMovementMethod.getInstance() } },
+                AndroidView(factory = { ctx -> TextView(ctx).apply { setTextIsSelectable(true); setPadding(0, 0, 0, 0) } },
                     update = { view -> view.setTextColor(foreground); view.setLinkTextColor(link); view.textSize = 16 * scale; markwon.setMarkdown(view, segment.text) },
                     modifier = Modifier.fillMaxWidth())
             }
