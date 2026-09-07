@@ -114,10 +114,10 @@ jobs:
           path: app/build/reports/androidTests/
           if-no-files-found: warn
   release:
-    # device-tests is intentionally not a gate: the hosted emulator runner currently fails
-    # on every run, and an infrastructure failure must not block publishing built APKs.
-    # verify (source policy, detekt, unit tests, lint, assemble) still gates this job.
-    needs: [verify]
+    # Both gates are green again: verify (source policy, detekt, unit tests, lint, assemble)
+    # and device-tests (instrumentation on API 26 and 35 emulators). The earlier bypass existed
+    # only because instrumentation sources did not compile; that is fixed.
+    needs: [verify, device-tests]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -189,7 +189,7 @@ jobs:
             fi
             echo 'Install note: an update is rejected when the previously installed build was signed with a different key - uninstall it first.'
             echo ''
-            echo 'Checks: job `verify` (source policy, detekt, unit tests, Android Lint, assembleDebug/assembleRelease) is green. Emulator `device-tests` (API 26/35) fail on hosted runners and do not gate this release; instrumentation and manual QA on a real device were not performed.'
+            echo 'Checks: `verify` (source policy, detekt, unit tests, Android Lint, assembleDebug/assembleRelease) and `device-tests` (instrumentation on API 26 and 35 emulators) are green; both gate this release. Manual QA on a real device - install, visual review, TalkBack, real provider API calls - was not performed.'
             echo 'AstraNotesEOF'
           } >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
