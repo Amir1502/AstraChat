@@ -171,7 +171,14 @@ class AstraViewModel @Inject constructor(
         models.value.filter { it.providerId == p.id }.forEach { repository.saveModel(it.copy(providerId = copy.id)) }
         notice.value = Notice("Профиль и модели скопированы. Ключи и секретные параметры не копировались.")
     }
-    fun saveModel(m: Model) = action { require(m.id.isNotBlank() && m.contextWindow > 0); require(m.inputPrice == null || m.inputPrice >= 0); require(m.outputPrice == null || m.outputPrice >= 0); repository.saveModel(m) }
+    fun saveModel(m: Model) = action {
+        require(m.id.isNotBlank() && m.contextWindow > 0)
+        val inPrice = m.inputPrice
+        val outPrice = m.outputPrice
+        require(inPrice == null || inPrice >= 0)
+        require(outPrice == null || outPrice >= 0)
+        repository.saveModel(m)
+    }
     fun removeModel(m: Model) = action { require(!guard.get()); repository.dao.deleteModel(m.providerId, m.id) }
     fun fetchModels(p: Provider) = networkAction {
         val credentials = withContext(Dispatchers.IO) { vault.read(p.id) }
