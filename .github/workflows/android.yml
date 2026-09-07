@@ -42,12 +42,20 @@ jobs:
         run: ./gradlew test --stacktrace
       - name: Android Lint
         run: ./gradlew lint --stacktrace
-      - name: Debug APK
+      - name: Build APKs
         run: |
           ./gradlew assembleDebug --stacktrace
           mkdir -p dist
           VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
           cp app/build/outputs/apk/debug/app-debug.apk "dist/AstraChat-v${VERSION}-debug-universal.apk"
+          ./gradlew assembleRelease --stacktrace || true
+          if [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            cp app/build/outputs/apk/release/app-release-unsigned.apk "dist/AstraChat-v${VERSION}-universal-unsigned.apk"
+          fi
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk "dist/AstraChat-v${VERSION}-universal.apk"
+          fi
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: AstraChat-debug-${{ github.run_number }}

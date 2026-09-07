@@ -5,8 +5,7 @@ config:
   warningsAsErrors: true
 potential-bugs:
   active: true
-  DuplicateCaseInWhenExpression:
-    active: true
+
   EqualsAlwaysReturnsTrueOrFalse:
     active: true
   InvalidRange:
