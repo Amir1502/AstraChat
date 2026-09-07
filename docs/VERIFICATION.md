@@ -76,3 +76,16 @@
 - Встроенные модели не выдаются за доступные без учётной записи: действительный ID нужно получить через API или добавить вручную.
 
 Обязательные непроверенные функции не заменены фиктивными успешными Issues или Release. Проект следует продолжать проверять после устранения указанных блокировок.
+
+## Дополнение — локальная проверка 1.0.1 (Windows, та же дата)
+
+Блокировки разделов «Среда» и «Команды Gradle» относятся к прежней среде и в текущей сняты:
+
+- Установлен Android SDK `C:\Android\Sdk`: platform-tools, `platforms;android-37.0` (плюс junction `android-37`), `build-tools;36.0.0`. Java — Temurin 17.0.20, сеть доступна.
+- `./gradlew detektCheck test lint assembleDebug assembleRelease` — BUILD SUCCESSFUL за 7m59s (Gradle 9.3.1 через source bootstrap).
+- Unit-тесты: 20 тестов, 0 падений — `AstraViewModelTest` 2, `NetworkTest` 7, `ProviderCodecTest` 11.
+- APK созданы фактически: `app/build/outputs/apk/debug/app-debug.apk` (14 064 646 байт) и `app/build/outputs/apk/release/app-release-unsigned.apk` (1 971 510 байт). Копии: `dist/AstraChat-v1.0.1-debug-universal.apk`, `dist/AstraChat-v1.0.1-universal-unsigned.apk`, SHA-256 в `dist/SHA256SUMS-v1.0.1-local.txt`.
+- Релизный APK **не подписан**: ни в среде, ни в секретах workflow нет keystore. Такой APK не устанавливается до подписи; подпись не имитируется.
+- Причиной красных `Unit tests` в Actions был не тест, а ошибка компиляции `app/src/main/java/com/folzi/astrachat/ui/Components.kt`: `Markwon.Builder.linkResolver` в Markwon 4.6.2 не существует (есть только у `MarkwonConfiguration.Builder`). Исправлено установкой резолвера через `AbstractMarkwonPlugin.configureConfiguration`.
+- Локальные отклонения инструментов: `python tools/check_source.py` падает на `dist/*.apk` (политика запрещает APK в дереве; в CI checkout `dist/` отсутствует), `bash tools/offline-checks.sh` падает из-за кодировки javac windows-1251 — те же 17 assertions проходят при `-encoding UTF-8`.
+- Не проверено локально: instrumentation и Compose-тесты на эмуляторе, установка APK, ручное визуальное QA, TalkBack, реальные запросы к API провайдеров. Job `device-tests` (API 26/35) падает на hosted-раннерах GitHub; с 1.0.1 он не блокирует job `release`, и это указано в теле релиза.

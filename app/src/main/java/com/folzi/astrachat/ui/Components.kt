@@ -5,6 +5,11 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.text.Spannable
+import android.text.method.ArrowKeyMovementMethod
+import android.text.style.URLSpan
+import android.view.MotionEvent
+import android.view.View
 import android.widget.TextView
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -24,7 +29,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
+import io.noties.markwon.MarkwonConfiguration
 import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import java.util.Locale
@@ -66,11 +73,15 @@ fun Markdown(text: String, scale: Float) {
     val foreground = MaterialTheme.colorScheme.onSurface.toArgb()
     val link = MaterialTheme.colorScheme.primary.toArgb()
     val markwon = remember(context) {
-        Markwon.builder(context).usePlugin(TablePlugin.create(context)).usePlugin(StrikethroughPlugin.create())
-            .linkResolver { view, href ->
-                val uri = Uri.parse(href)
-                if (uri.scheme in setOf("https", "http")) runCatching { view.context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
-            }.build()
+        Markwon.builder(context)
+            .usePlugin(TablePlugin.create(context))
+            .usePlugin(StrikethroughPlugin.create())
+            .usePlugin(object : AbstractMarkwonPlugin() {
+                override fun configureConfiguration(builder: MarkwonConfiguration.Builder) {
+                    builder.linkResolver { view, href -> openLink(view, href) }
+                }
+            })
+            .build()
     }
     val segments = remember(text) { splitCode(text) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -89,7 +100,12 @@ fun Markdown(text: String, scale: Float) {
                     }
                 }
             } else if (segment.text.isNotEmpty()) {
-                AndroidView(factory = { ctx -> TextView(ctx).apply { setTextIsSelectable(true); setPadding(0, 0, 0, 0) } },
+                AndroidView(factory = { ctx ->
+                    TextView(ctx).apply {
+                        setTextIsSelectable(true); setPadding(0, 0, 0, 0)
+                        movementMethod = SelectableLinkMovementMethod()
+                    }
+                },
                     update = { view -> view.setTextColor(foreground); view.setLinkTextColor(link); view.textSize = 16 * scale; markwon.setMarkdown(view, segment.text) },
                     modifier = Modifier.fillMaxWidth())
             }
@@ -120,5 +136,33 @@ private fun highlight(text: String) = buildAnnotatedString {
     val stringColor = if (MaterialTheme.colorScheme.onSurface.luminance() > 0.5f) Color(0xFF83CCA0) else Color(0xFF207044)
     Regex("\\b(fun|val|var|class|return|if|else|for|while|import|package|def|const|let|function|public|private|true|false|null|None|async|await)\\b|\"(?:[^\"\\\\]|\\\\.)*\"").findAll(text).forEach { m ->
         addStyle(SpanStyle(color = if (m.value.startsWith('"')) stringColor else keyword), m.range.first, m.range.last + 1)
+    }
+}
+
+private fun openLink(view: View, href: String) {
+    val uri = Uri.parse(href)
+    val scheme = uri.scheme
+    if (scheme != "http" && scheme != "https") return
+    runCatching { view.context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+}
+
+/** ArrowKeyMovementMethod keeps text selection alive; taps on link spans are consumed before delegating. */
+private class SelectableLinkMovementMethod : ArrowKeyMovementMethod() {
+    override fun onTouchEvent(widget: TextView, buffer: Spannable, event: MotionEvent): Boolean {
+        val action = event.action
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_DOWN) {
+            val layout = widget.layout
+            if (layout != null) {
+                val x = event.x - widget.totalPaddingLeft + widget.scrollX
+                val y = event.y - widget.totalPaddingTop + widget.scrollY
+                val offset = layout.getOffsetForHorizontal(layout.getLineForVertical(y.toInt()), x)
+                val spans = buffer.getSpans(offset, offset, URLSpan::class.java)
+                if (spans.isNotEmpty()) {
+                    if (action == MotionEvent.ACTION_UP) spans[0].onClick(widget)
+                    return true
+                }
+            }
+        }
+        return super.onTouchEvent(widget, buffer, event)
     }
 }

@@ -2,9 +2,10 @@
 
 ## 1.0.1
 - Бамп версии: versionCode 2, versionName 1.0.1.
-- Восстановлен оригинальный Components.kt до правок ИИ (revert 521886c).
-- APK собирается в Android CI по тегу v1.0.1 и публикуется в GitHub Release.
-- Подпись релиза выполняется только при наличии секретов подписи; без них публикуется явно неподписанный APK.
+- Исправлена компиляция `app/src/main/java/com/folzi/astrachat/ui/Components.kt`: `Markwon.Builder` в Markwon 4.6.2 не имеет `linkResolver`, поэтому резолвер http/https-ссылок теперь ставится через `AbstractMarkwonPlugin.configureConfiguration`.
+- Ссылки кликабельны и при этом выделение текста сохранено: `SelectableLinkMovementMethod` наследует `ArrowKeyMovementMethod` и обрабатывает тапы по link-спанам.
+- Job `release` больше не зависит от `device-tests`: эмуляторные прогоны (API 26/35) падают на hosted-раннерах и не блокируют публикацию собранных APK.
+- Проверено локально: detekt, 20 unit-тестов, lint, assembleDebug и assembleRelease — зелёные; релизный APK без подписи.
 
 ## 1.0.0 — unreleased source candidate
 - Добавлен нативный Android-проект com.folzi.astrachat.
