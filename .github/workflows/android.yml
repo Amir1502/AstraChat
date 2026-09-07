@@ -175,17 +175,41 @@ jobs:
           name: AstraChat-release-${{ github.ref_name }}
           path: dist/*
           if-no-files-found: error
+      - name: Compose release notes
+        id: notes
+        run: |
+          {
+            echo 'body<<AstraNotesEOF'
+            echo 'APK universal: no ABI filtering and no bundled native inference engine.'
+            echo 'Asset naming: `-universal.apk` is signed by CI, `-universal-unsigned.apk` is NOT installable until signed.'
+            if [ -n "${ANDROID_KEYSTORE_PATH:-}" ]; then
+              echo 'Signing: the ANDROID_KEYSTORE_* secrets were present, so this release APK is signed by CI with the repository keystore.'
+            else
+              echo 'Signing: the ANDROID_KEYSTORE_* secrets are missing or incomplete, so this release publishes an explicitly unsigned APK. No signing is claimed.'
+            fi
+            echo 'Install note: an update is rejected when the previously installed build was signed with a different key - uninstall it first.'
+            echo ''
+            echo 'Checks: job `verify` (source policy, detekt, unit tests, Android Lint, assembleDebug/assembleRelease) is green. Emulator `device-tests` (API 26/35) fail on hosted runners and do not gate this release; instrumentation and manual QA on a real device were not performed.'
+            echo 'AstraNotesEOF'
+          } >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
-          body: |
-            APK universal: no ABI filtering and no bundled native inference engine.
-            An APK ending in -unsigned.apk is NOT installable until signed.
-            No claim of signing is made when signing secrets are missing.
-            Emulator device tests (API 26/35) fail on hosted runners and do not gate this release;
-            verify (source policy, detekt, unit tests, lint, assemble) is green.
+          body: ${{ steps.notes.outputs.body }}
+      - name: Drop stale unsigned asset from a signed release
+        if: env.ANDROID_KEYSTORE_PATH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' \
+            | grep -- '-universal-unsigned\.apk$' \
+            | while read -r stale; do
+                echo "removing stale unsigned asset: $stale"
+                gh release delete-asset "$RELEASE_TAG" "$stale" --yes || true
+              done
+          true
       - name: Remove temporary signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/astra-signing.jks"
