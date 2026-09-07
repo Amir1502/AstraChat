@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- Исправлена компиляция инструментальных тестов: в Room 2.8.4 `RoomDatabase` больше не реализует `Closeable`/`AutoCloseable` (проверено `javap` по `room-runtime-android-2.8.4`), поэтому `use {}` в `app/src/androidTest/java/com/folzi/astrachat/StorageTest.kt` заменён на явный `try/finally` с `close()`.
+- До этого job `device-tests` падал не на эмуляторе, а на `:app:compileDebugAndroidTestKotlin`; эмулятор API 35 в логе CI загружался штатно.
+- Локально проверено: `:app:compileDebugAndroidTestKotlin` и `detektCheck` — BUILD SUCCESSFUL. Прогон инструментальных тестов на эмуляторе локально не выполнялся (нет AVD).
+
 ## 1.0.1
 - Бамп версии: versionCode 2, versionName 1.0.1.
 - Исправлена компиляция `app/src/main/java/com/folzi/astrachat/ui/Components.kt`: `Markwon.Builder` в Markwon 4.6.2 не имеет `linkResolver`, поэтому резолвер http/https-ссылок теперь ставится через `AbstractMarkwonPlugin.configureConfiguration`.

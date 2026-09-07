@@ -14,7 +14,9 @@ import org.junit.runner.RunWith
 class StorageTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
     @Test fun branchesAndBackupsDoNotOverwriteOriginals() = runBlocking {
-        Room.inMemoryDatabaseBuilder(context, AstraDatabase::class.java).build().use { db ->
+        // Room 2.8 RoomDatabase no longer implements Closeable, so kotlin.use does not apply.
+        val db = Room.inMemoryDatabaseBuilder(context, AstraDatabase::class.java).build()
+        try {
             val repo = ChatRepository(db); repo.initialize()
             val id = repo.createChat("openai", "model")
             val answer = repo.appendExchange(id, "original", "openai", "model")
@@ -24,7 +26,7 @@ class StorageTest {
             val backup = repo.exportJson()
             assertFalse(backup.contains("Credentials")); assertFalse(backup.contains("api_key"))
             assertEquals(2, repo.importJson(backup)); assertEquals(4, db.dao().allChats().size)
-        }
+        } finally { db.close() }
     }
     @Test fun migrationPreservesUsageAndAddsState() = runBlocking {
         val name = "migration-test.db"; context.deleteDatabase(name)
@@ -40,11 +42,12 @@ class StorageTest {
         sql.execSQL("INSERT INTO usage SELECT * FROM usage_v1"); sql.execSQL("DROP TABLE usage_v1")
         sql.execSQL("CREATE INDEX index_usage_chatId ON usage(chatId)"); sql.execSQL("CREATE INDEX index_usage_timestamp ON usage(timestamp)")
         sql.execSQL("PRAGMA user_version=1"); original.close()
-        Room.databaseBuilder(context, AstraDatabase::class.java, name).addMigrations(AstraDatabase.MIGRATION_1_2).build().use { migrated ->
+        val migrated = Room.databaseBuilder(context, AstraDatabase::class.java, name).addMigrations(AstraDatabase.MIGRATION_1_2).build()
+        try {
             migrated.openHelper.readableDatabase.query("SELECT total,state FROM usage WHERE requestId='request'").use { cursor ->
                 assertTrue(cursor.moveToFirst()); assertEquals(30, cursor.getInt(0)); assertEquals("complete", cursor.getString(1))
             }
-        }
+        } finally { migrated.close() }
         context.deleteDatabase(name)
     }
     @Test fun vaultCiphertextIsNotPlaintextAndCanBeRemoved() {
