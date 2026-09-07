@@ -13,7 +13,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class StorageTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-    @Test fun branchesAndBackupsDoNotOverwriteOriginals() = runBlocking {
+    @Test fun branchesAndBackupsDoNotOverwriteOriginals() = runBlocking<Unit> {
         // Room 2.8 RoomDatabase no longer implements Closeable, so kotlin.use does not apply.
         val db = Room.inMemoryDatabaseBuilder(context, AstraDatabase::class.java).build()
         try {
@@ -28,7 +28,9 @@ class StorageTest {
             assertEquals(2, repo.importJson(backup)); assertEquals(4, db.dao().allChats().size)
         } finally { db.close() }
     }
-    @Test fun migrationPreservesUsageAndAddsState() = runBlocking {
+    // JUnit4 requires void test methods: runBlocking<Unit> keeps the inferred return type Unit
+    // even though the last statement (deleteDatabase) returns Boolean.
+    @Test fun migrationPreservesUsageAndAddsState() = runBlocking<Unit> {
         val name = "migration-test.db"; context.deleteDatabase(name)
         val original = Room.databaseBuilder(context, AstraDatabase::class.java, name).build()
         val dao = original.dao()
