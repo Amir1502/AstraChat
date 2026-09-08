@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.2
 - Исправлена компиляция инструментальных тестов: в Room 2.8.4 `RoomDatabase` больше не реализует `Closeable`/`AutoCloseable` (проверено `javap` по `room-runtime-android-2.8.4`), поэтому `use {}` в `app/src/androidTest/java/com/folzi/astrachat/StorageTest.kt` заменён на явный `try/finally` с `close()`.
 - JUnit4 отклонял `StorageTest` с `InvalidTestClassError: Method migrationPreservesUsageAndAddsState() should be void`: выражение `= runBlocking { ... }` выводило `Boolean` из-за последнего `context.deleteDatabase(name)`. Оба корутин-теста закреплены как `runBlocking<Unit>`.
 - До этих правок job `device-tests` падал на `:app:compileDebugAndroidTestKotlin` и на инициализации JUnit-раннера, а не на эмуляторе: эмуляторы API 26/35 в CI загружались штатно.

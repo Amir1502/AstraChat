@@ -1,7 +1,7 @@
 # Astra Chat
 
 Нативный Android AI-чат: Kotlin, Jetpack Compose, Material 3, Hilt, Room, DataStore и OkHttp.
-Package: Android 8.0 / API 26 и выше. Версия исходников: `1.0.1`.
+Package: Android 8.0 / API 26 и выше. Версия исходников: `1.0.2`.
 
 
 
