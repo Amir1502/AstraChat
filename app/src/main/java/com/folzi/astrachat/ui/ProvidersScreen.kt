@@ -1,5 +1,6 @@
 package com.folzi.astrachat.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
@@ -31,7 +32,12 @@ fun ProvidersScreen(vm: AstraViewModel, back: () -> Unit) {
             item { Text("Ключи, дополнительные заголовки и query-параметры зашифрованы Android Keystore. Модели можно получить через API или добавить вручную.") }
             if (busy) item { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("Обращение к API…") }
             items(providers, key = { it.id }) { p ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("${p.icon} ${p.name}", style = MaterialTheme.typography.titleLarge)
                         Text(p.baseUrl, style = MaterialTheme.typography.bodySmall)

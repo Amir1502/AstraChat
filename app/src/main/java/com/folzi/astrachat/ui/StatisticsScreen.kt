@@ -1,5 +1,6 @@
 package com.folzi.astrachat.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.*
@@ -44,7 +45,12 @@ private fun Summary(title: String, rows: List<UsageRow>) {
     val completed = rows.filter { it.state == "complete" }
     val speed = completed.map { it.tokensPerSecond }.average()
     val ttft = rows.mapNotNull { it.ttftMs }.average()
-    ElevatedCard(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text("${rows.sumOf { it.total }} токенов", style = MaterialTheme.typography.headlineMedium)
