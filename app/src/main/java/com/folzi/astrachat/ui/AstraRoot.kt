@@ -1,5 +1,7 @@
 package com.folzi.astrachat.ui
 
+import android.view.WindowManager
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -9,10 +11,22 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.*
 import kotlinx.coroutines.launch
 
+/** MainActivity starts the window with FLAG_SECURE; this lifts it only while the user allows screenshots. */
+@Composable
+private fun ApplyScreenshotPolicy(allowed: Boolean) {
+    val window = LocalActivity.current?.window
+    LaunchedEffect(window, allowed) {
+        if (window == null) return@LaunchedEffect
+        if (allowed) window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+}
+
 @Composable
 fun AstraRoot(vm: AstraViewModel) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val notice by vm.notice.collectAsStateWithLifecycle()
+    ApplyScreenshotPolicy(settings.allowScreenshots)
     val nav = rememberNavController()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()

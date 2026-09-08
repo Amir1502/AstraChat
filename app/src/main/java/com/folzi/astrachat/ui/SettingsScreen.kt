@@ -67,6 +67,13 @@ fun SettingsScreen(vm: AstraViewModel, providers: () -> Unit, back: () -> Unit) 
                 Text("Размер текста сообщений: ${number(stored.textScale.toDouble())}×; системный масштаб сохраняется")
                 Slider(stored.textScale, { vm.saveSettings(stored.copy(textScale = it)) }, valueRange = 0.9f..1.5f)
             }
+            Section("Приватность экрана") {
+                Toggle("Разрешить скриншоты и превью в недавних", stored.allowScreenshots) { vm.saveSettings(stored.copy(allowScreenshots = it)) }
+                Text(
+                    "По умолчанию окно защищено флагом Android FLAG_SECURE: системные снимки экрана и миниатюры в недавних приложениях блокируются. Включите переключатель, чтобы делать скриншоты переписки — например, для документации или обсуждения ответа. Снимки попадают в галерею и могут быть доступны другим приложениям; настройка применяется сразу, без перезапуска, и не меняется при обновлении приложения.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Section("Генерация по умолчанию") {
                 TextField("System prompt", generation.system, { generation = generation.copy(system = it) }, false)
                 TextField("Temperature (пусто — не отправлять)", temperature, { temperature = it })
