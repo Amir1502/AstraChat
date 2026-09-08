@@ -1,6 +1,7 @@
 # Changelog
 
 ## 1.0.2
+- Бамп версии: versionCode 3, versionName 1.0.2.
 - Исправлена компиляция инструментальных тестов: в Room 2.8.4 `RoomDatabase` больше не реализует `Closeable`/`AutoCloseable` (проверено `javap` по `room-runtime-android-2.8.4`), поэтому `use {}` в `app/src/androidTest/java/com/folzi/astrachat/StorageTest.kt` заменён на явный `try/finally` с `close()`.
 - JUnit4 отклонял `StorageTest` с `InvalidTestClassError: Method migrationPreservesUsageAndAddsState() should be void`: выражение `= runBlocking { ... }` выводило `Boolean` из-за последнего `context.deleteDatabase(name)`. Оба корутин-теста закреплены как `runBlocking<Unit>`.
 - До этих правок job `device-tests` падал на `:app:compileDebugAndroidTestKotlin` и на инициализации JUnit-раннера, а не на эмуляторе: эмуляторы API 26/35 в CI загружались штатно.
@@ -14,6 +15,9 @@
 - `ui/ProvidersScreen.kt` и `ui/StatisticsScreen.kt`: `ElevatedCard` заменён на плоскую `Card` с hairline-рамкой — теней в интерфейсе не осталось.
 - Добавлен инструментальный тест `hairlineSurfacesRenderTranscriptLabels`: проверяет рендер `Panel`/`RoleLabel`/`SectionLabel`/`Hairline` и клик по `PrimaryAction`. В `androidTest` теперь 5 тестов (3 в `StorageTest`, 2 в `ComposeSmokeTest`).
 - Локально проверено: `detektCheck`, 20 unit-тестов (`AstraViewModelTest` 2, `NetworkTest` 7, `ProviderCodecTest` 11), `lint`, `assembleDebug`, `:app:compileDebugAndroidTestKotlin` — BUILD SUCCESSFUL; новых lint-предупреждений нет. Визуально редизайн не проверялся: подключённого устройства и AVD нет (`adb devices` пуст), подтверждение — компиляция, lint и тесты, а не просмотр интерфейса.
+- Релиз v1.0.2 опубликован tag-прогоном 34225956993: `verify`, `device-tests (26)`, `device-tests (35)` и `release` — success (гейт сработал впервые после возвращения). Ассет `AstraChat-v1.0.2-universal.apk`, 1 981 711 байт, SHA-256 `36a4c9fdc02dc1dbb75048f4f4ff98cebd3dc9d8711497226d7d6e31a141b4f9` — совпадает с `SHA256SUMS.txt` релиза. Неподписанных ассетов в релизе нет.
+- Подпись CI-ассета проверена после скачивания: `apksigner verify --print-certs` → Verifies, v2 scheme = true, сертификат `CN=Astra Chat Release, OU=Mobile, O=AstraChat, C=US`, SHA-256 сертификата `e0ce85d9195b6fde6679653ac46d864dadaa20666d5f63973c7a07166bd06a25` — тот же ключ, что у 1.0.1, поэтому обновление устанавливается поверх без удаления. `aapt2 dump badging`: `com.folzi.astrachat`, versionCode 3, versionName 1.0.2, minSdk 26, targetSdk 37, native-code arm64-v8a/armeabi-v7a/x86/x86_64.
+- Локальная сверка: `assembleRelease` с тем же keystore дал `dist/AstraChat-v1.0.2-universal-signed.apk` (1 983 799 байт, SHA-256 `4be1ee03e85a5ff67091351edac6e735b7219d2929ecbd71685f6aaa638ff31b`). Байты отличаются от CI-сборки (другое окружение, метки времени в архиве), сертификат идентичен. Debug-сборка для быстрого просмотра: `dist/AstraChat-codex-ui-debug.apk` (14 315 460 байт, debug-ключ `5e9df9ed…`).
 
 ## 1.0.1
 - Бамп версии: versionCode 2, versionName 1.0.1.
