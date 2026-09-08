@@ -16,7 +16,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // Secure by default: AstraRoot lifts FLAG_SECURE only while the user allows screenshots.
+        // The window starts secured so nothing is capturable before settings load; AstraRoot then
+        // applies the stored preference, which allows screenshots by default since 1.0.3.
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setContent { AstraRoot(vm) }
     }

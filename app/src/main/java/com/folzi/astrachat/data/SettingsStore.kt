@@ -16,7 +16,7 @@ private val Context.settingsData by preferencesDataStore("settings")
 data class AppSettings(
     val theme: String = "system", val dynamicColors: Boolean = false,
     val textScale: Float = 1f, val animations: Boolean = true,
-    val allowScreenshots: Boolean = false,
+    val allowScreenshots: Boolean = true,
     val providerId: String = "openai", val modelId: String = "", val generation: Generation = Generation(),
 )
 @Singleton

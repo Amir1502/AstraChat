@@ -11,7 +11,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.*
 import kotlinx.coroutines.launch
 
-/** MainActivity starts the window with FLAG_SECURE; this lifts it only while the user allows screenshots. */
+/** MainActivity starts the window secured; this applies the stored screenshot preference as soon as settings load. */
 @Composable
 private fun ApplyScreenshotPolicy(allowed: Boolean) {
     val window = LocalActivity.current?.window
