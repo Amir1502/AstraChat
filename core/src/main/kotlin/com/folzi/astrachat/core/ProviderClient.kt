@@ -114,12 +114,12 @@ class ProviderClient(private val base: OkHttpClient = OkHttpClient()) : ChatGate
         result.distinct().sorted()
     }
 }
-private fun okio.BufferedSource.readUtf8Limited(limit: Long): String {
+internal fun okio.BufferedSource.readUtf8Limited(limit: Long): String {
     request(limit + 1)
     if (buffer.size > limit) throw SafeFailure(FailureKind.MALFORMED)
     return readUtf8()
 }
-private suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { cont ->
+internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { cont ->
     cont.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: java.io.IOException) { if (!cont.isCancelled) cont.resumeWith(Result.failure(safeFailure(e))) }
