@@ -9,6 +9,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 private const val TERMINATE_TIMEOUT_MS = 2000L
 private const val MAX_SESSION_ID = 512
+private const val MAX_PAGES = 20
 private val BLOCKED_HEADERS = setOf("host", "content-length", "connection", "transfer-encoding", "accept", "content-type", "mcp-session-id", "mcp-protocol-version")
 
 /** MCP client for the Streamable HTTP transport (protocol revision 2025-06-18).
@@ -32,13 +33,16 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
         val rpc = Rpc(http(server), TransportPolicy.validate(server.url, server.allowLocalHttp), credentials)
         try {
             rpc.initialize()
-            block(rpc)
+            // HTTP 404 on an established session means the server terminated it: start a new one exactly once.
+            try { block(rpc) } catch (expired: Rpc.Expired) { rpc.initialize(); block(rpc) }
         } finally {
             withContext(NonCancellable) { withTimeoutOrNull(TERMINATE_TIMEOUT_MS) { runCatching { rpc.terminate() } } }
         }
     }
 
     private class Rpc(private val client: OkHttpClient, private val url: HttpUrl, private val credentials: Credentials) {
+        class Expired : Exception()
+        class NotFound : Exception()
         var session: McpSession? = null; private set
         private var sessionId: String? = null
         private var protocol = MCP_PROTOCOL_LATEST
@@ -74,7 +78,7 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
             post(message).use { response ->
                 if (!response.isSuccessful) throw mcpHttpFailure(response.code)
                 sessionId = response.header("Mcp-Session-Id")?.takeIf { it.length <= MAX_SESSION_ID && it.all { c -> c in '!'..'~' } }
-                val result = resultOf(response)
+                val result = resultOf(id, response)
                 val version = result.str("protocolVersion")
                 if (version !in MCP_PROTOCOL_VERSIONS) throw SafeFailure(FailureKind.MCP)
                 protocol = version
@@ -98,24 +102,55 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
                 if (params != null) put("params", params)
             }
             post(message).use { response ->
-                if (!response.isSuccessful) throw mcpHttpFailure(response.code)
-                return resultOf(response)
+                if (!response.isSuccessful) {
+                    if (response.code == 404 && sessionId != null) throw Expired()
+                    throw mcpHttpFailure(response.code)
+                }
+                return resultOf(id, response)
             }
         }
 
-        private suspend fun resultOf(response: Response): JsonObject {
+        private suspend fun resultOf(id: Int, response: Response): JsonObject {
             val body = response.body ?: throw SafeFailure(FailureKind.MALFORMED)
+            if (response.header("Content-Type").orEmpty().contains("text/event-stream", true)) {
+                val reader = SseReader(body.charStream(), 2 * 1024 * 1024)
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val event = reader.next() ?: break
+                    val message = json.parseToJsonElement(event.data()) as? JsonObject ?: continue
+                    // Notifications and server-initiated requests in the stream are ignored on stage 1.
+                    if ((message.containsKey("result") || message.containsKey("error")) &&
+                        (message["id"] as? JsonPrimitive)?.content == id.toString()
+                    ) return checked(message)
+                }
+                throw SafeFailure(FailureKind.TRUNCATED)
+            }
             val text = body.source().readUtf8Limited(4L * 1024 * 1024)
             return checked(json.parseToJsonElement(text) as? JsonObject ?: throw SafeFailure(FailureKind.MALFORMED))
         }
 
         private fun checked(message: JsonObject): JsonObject {
-            if (message.obj("error").isNotEmpty()) throw SafeFailure(FailureKind.MCP)
+            val error = message.obj("error")
+            if (error.isNotEmpty()) {
+                if (error.num("code") == -32601L) throw NotFound()
+                throw SafeFailure(FailureKind.MCP)
+            }
             return message.obj("result")
         }
 
-        suspend fun <T> list(method: String, key: String, parse: (JsonObject) -> T?): List<T> =
-            request(method, null).arr(key).filterIsInstance<JsonObject>().mapNotNull(parse)
+        suspend fun <T> list(method: String, key: String, parse: (JsonObject) -> T?): List<T> {
+            val out = mutableListOf<T>()
+            var cursor = ""; var page = 0
+            do {
+                val params = if (cursor.isEmpty()) null else buildJsonObject { put("cursor", cursor) }
+                // -32601 means the server does not implement the list despite advertising the capability.
+                val result = try { request(method, params) } catch (missing: NotFound) { return out }
+                result.arr(key).filterIsInstance<JsonObject>().forEach { o -> parse(o)?.let(out::add) }
+                cursor = result.str("nextCursor")
+                page++
+            } while (cursor.isNotEmpty() && page < MAX_PAGES)
+            return out
+        }
 
         suspend fun terminate() {
             if (sessionId == null) return
