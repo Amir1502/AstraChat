@@ -41,6 +41,7 @@ fun AstraRoot(vm: AstraViewModel) {
                     NavHost(nav, startDestination = "chat", modifier = Modifier.fillMaxSize()) {
                         composable("chat") { ChatScreen(vm, if (wide) null else openMenu, { navigate("settings") }, { navigate("providers") }) }
                         composable("providers") { ProvidersScreen(vm) { nav.popBackStack() } }
+                        composable("mcp") { McpScreen(vm, { nav.popBackStack() }) { navigate("chat") } }
                         composable("settings") { SettingsScreen(vm, { navigate("providers") }) { nav.popBackStack() } }
                         composable("statistics") { StatisticsScreen(vm) { nav.popBackStack() } }
                     }

@@ -328,6 +328,7 @@ fun HistoryPanel(vm: AstraViewModel, onSelected: () -> Unit, navigate: (String) 
             }
         }
         Hairline()
+        Action("MCP-серверы") { navigate("mcp") }
         Action("Провайдеры") { navigate("providers") }
         Action("Статистика") { navigate("statistics") }
         Action("Настройки") { navigate("settings") }

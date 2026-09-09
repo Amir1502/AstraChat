@@ -124,7 +124,7 @@ private fun ProviderEditor(original: Provider, vm: AstraViewModel, close: () -> 
     }
     if (deleteKey) Confirm("Удалить сохранённые секреты?", "Будут удалены API-ключ, секретные заголовки и query-параметры.", { deleteKey = false }) { vm.deleteKey(p.id) }
 }
-private fun stringMap(value: String): Map<String, String> {
+internal fun stringMap(value: String): Map<String, String> {
     val parsed = json.parseToJsonElement(value).jsonObject
     require(parsed.values.all { it is JsonPrimitive && it.isString })
     return parsed.mapValues { it.value.jsonPrimitive.content }
