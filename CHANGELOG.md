@@ -1,5 +1,12 @@
 # Changelog
 
+## Не выпущено
+- MCP (Model Context Protocol), этап 1: клиент Streamable HTTP (ревизия 2025-06-18) в `core` (`Mcp.kt`, `McpClient.kt`) — initialize с negotiation версии и сессии, notifications/initialized, tools/list, resources/list, prompts/list с пагинацией и деградацией -32601, resources/read, prompts/get, terminate через DELETE, повторный initialize по 404; ответы JSON и SSE; ошибки только SafeFailure (новый FailureKind.MCP), без эха тел и заголовков.
+- Экран «MCP-серверы» (`ui/McpScreen.kt`, пункт в панели истории): добавление/настройка/удаление серверов, подключение с обзором инструментов, вставка ресурсов и промптов (с аргументами) в черновик чата. Вызов инструментов моделью — следующий этап, не заявляется.
+- Room v3: таблица `mcp_servers`, недеструктивная миграция 2→3, schema JSON сохранён; инструментальный тест миграции (CI). Секреты MCP — конверт SecretVault с ключом `mcp-<id>`.
+- Только Streamable HTTP: stdio на Android недоступен, legacy HTTP+SSE 2024-11-05 не поддерживается.
+- Локально проверено: `python tools\check_source.py` — PASS (70 файлов); `detektCheck`, `test` (37 unit-тестов: core 33 — McpClientTest 15, NetworkTest 7, ProviderCodecTest 11; app 4 — AstraViewModelTest), `lint` (5 прежних замечаний, ни одного в новых MCP-файлах), `assembleDebug`, `:app:compileDebugAndroidTestKotlin` — BUILD SUCCESSFUL. Не проверено: инструментальные тесты локально (нет AVD — StorageTest, включая миграцию 2→3, выполнится в CI), живой MCP-сервер, визуальное QA экрана «MCP-серверы».
+
 ## 1.0.3
 - Бамп версии: versionCode 4, versionName 1.0.3.
 - Скриншоты стали возможными: в `data/SettingsStore.kt` добавлено поле `allowScreenshots` (по умолчанию `true` — решение владельца: снимки разрешены, защита окна становится опцией), в настройках — раздел «Приватность экрана» с переключателем и пояснением, а политику окна применяет `ui/AstraRoot.kt`. `MainActivity` стартует с `FLAG_SECURE`, чтобы окно было защищено до загрузки настроек; Compose применяет сохранённое значение без перезапуска и возвращает защиту при выключении переключателя. В первой редакции правки дефолт был `false`, но ни одна опубликованная сборка с ним не выходила.
