@@ -52,6 +52,23 @@ class StorageTest {
         } finally { migrated.close() }
         context.deleteDatabase(name)
     }
+    @Test fun migrationV2ToV3AddsMcpServersAndPreservesData() = runBlocking<Unit> {
+        val name = "migration-v3-test.db"; context.deleteDatabase(name)
+        val original = Room.databaseBuilder(context, AstraDatabase::class.java, name).build()
+        original.dao().saveChat(ChatRow("chat-1", "История"))
+        // v3 differs from v2 only by the additive mcp_servers table: remove it and mark the file as v2.
+        val sql = original.openHelper.writableDatabase
+        sql.execSQL("DROP TABLE mcp_servers")
+        sql.execSQL("PRAGMA user_version=2"); original.close()
+        val migrated = Room.databaseBuilder(context, AstraDatabase::class.java, name)
+            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3).build()
+        try {
+            assertEquals("История", migrated.dao().chat("chat-1")?.title)
+            migrated.dao().saveMcpServer(McpServerRow("server-1", """{"id":"server-1","name":"Test","url":"https://example.com/mcp"}"""))
+            assertEquals(listOf("server-1"), migrated.dao().allMcpServers().map { it.id })
+        } finally { migrated.close() }
+        context.deleteDatabase(name)
+    }
     @Test fun vaultCiphertextIsNotPlaintextAndCanBeRemoved() {
         val vault = SecretVault(context); val id = "instrumentation-vault-test"
         try {

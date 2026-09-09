@@ -16,7 +16,9 @@ import javax.inject.Singleton
 object AppModule {
     @Provides @Singleton
     fun database(@ApplicationContext context: Context): AstraDatabase = Room.databaseBuilder(context, AstraDatabase::class.java, "astra.db")
-        .addMigrations(AstraDatabase.MIGRATION_1_2).build()
+        .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3).build()
     @Provides @Singleton
     fun gateway(): ChatGateway = ProviderClient()
+    @Provides @Singleton
+    fun mcpClient(): McpClient = McpClient()
 }
