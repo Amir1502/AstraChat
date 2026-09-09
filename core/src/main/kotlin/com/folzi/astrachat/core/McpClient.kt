@@ -1,6 +1,7 @@
 package com.folzi.astrachat.core
 
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import okhttp3.*
@@ -28,13 +29,55 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
             if (s.capabilities.prompts) list("prompts/list", "prompts") { o -> o.str("name").takeIf(String::isNotBlank)?.let { McpPrompt(it, o.str("title"), o.str("description"), o.arr("arguments").filterIsInstance<JsonObject>().map { a -> McpPromptArgument(a.str("name"), a.str("description"), a["required"] == JsonPrimitive(true)) }.filter { a -> a.name.isNotBlank() }) } } else emptyList())
     }
 
+    suspend fun readResource(server: McpServer, credentials: Credentials, uri: String): String {
+        require(uri.isNotBlank() && uri.length <= 2048)
+        return withSession(server, credentials) {
+            val result = try { request("resources/read", buildJsonObject { put("uri", uri) }) } catch (missing: Rpc.NotFound) { throw SafeFailure(FailureKind.MCP) }
+            val text = result.arr("contents").filterIsInstance<JsonObject>().firstNotNullOfOrNull { it.str("text").takeIf(String::isNotEmpty) } ?: throw SafeFailure(FailureKind.MCP)
+            if (text.length > MAX_RESOURCE_CHARS) throw SafeFailure(FailureKind.MCP)
+            text
+        }
+    }
+
+    suspend fun getPrompt(server: McpServer, credentials: Credentials, name: String, arguments: Map<String, String>): List<McpPromptMessage> {
+        require(name.isNotBlank())
+        return withSession(server, credentials) {
+            val params = buildJsonObject {
+                put("name", name)
+                if (arguments.isNotEmpty()) putJsonObject("arguments") { arguments.forEach { (k, v) -> put(k, v) } }
+            }
+            val result = try { request("prompts/get", params) } catch (missing: Rpc.NotFound) { throw SafeFailure(FailureKind.MCP) }
+            result.arr("messages").filterIsInstance<JsonObject>().mapNotNull { m ->
+                contentText(m["content"]).takeIf { it.isNotBlank() }?.let { McpPromptMessage(m.str("role"), it) }
+            }
+        }
+    }
+
+    private fun contentText(content: JsonElement?): String = when (content) {
+        is JsonObject -> blockText(content)
+        is JsonArray -> content.filterIsInstance<JsonObject>().joinToString("\n") { blockText(it) }.trim()
+        else -> ""
+    }
+    private fun blockText(block: JsonObject): String = when (block.str("type")) {
+        "text" -> block.str("text")
+        "resource" -> block.obj("resource").str("text")
+        else -> ""
+    }
+
     private suspend fun <T> withSession(server: McpServer, credentials: Credentials, block: suspend Rpc.() -> T): T = withContext(Dispatchers.IO) {
         require(server.timeoutSeconds in 10..600)
         val rpc = Rpc(http(server), TransportPolicy.validate(server.url, server.allowLocalHttp), credentials)
         try {
-            rpc.initialize()
-            // HTTP 404 on an established session means the server terminated it: start a new one exactly once.
-            try { block(rpc) } catch (expired: Rpc.Expired) { rpc.initialize(); block(rpc) }
+            // Coroutine cancellation must interrupt an in-flight blocking HTTP read immediately:
+            // a suspended watchdog child observes cancellation and cancels the current call.
+            coroutineScope {
+                val watchdog = launch { try { awaitCancellation() } finally { rpc.cancelCurrent() } }
+                try {
+                    rpc.initialize()
+                    // HTTP 404 on an established session means the server terminated it: start a new one exactly once.
+                    try { block(rpc) } catch (expired: Rpc.Expired) { rpc.initialize(); block(rpc) }
+                } finally { watchdog.cancel() }
+            }
         } finally {
             withContext(NonCancellable) { withTimeoutOrNull(TERMINATE_TIMEOUT_MS) { runCatching { rpc.terminate() } } }
         }
@@ -47,6 +90,9 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
         private var sessionId: String? = null
         private var protocol = MCP_PROTOCOL_LATEST
         private var nextId = 0
+        private val currentCall = AtomicReference<Call?>(null)
+
+        fun cancelCurrent() { currentCall.get()?.cancel() }
 
         private fun builder(): Request.Builder = Request.Builder().url(url).apply {
             credentials.headers.forEach { (k, v) ->
@@ -61,8 +107,11 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
             if (session != null) header("MCP-Protocol-Version", protocol)
         }
 
-        private suspend fun post(message: JsonObject): Response =
-            client.newCall(builder().post(message.toString().toRequestBody("application/json".toMediaType())).build()).awaitResponse()
+        private suspend fun post(message: JsonObject): Response {
+            val call = client.newCall(builder().post(message.toString().toRequestBody("application/json".toMediaType())).build())
+            currentCall.set(call)
+            return call.awaitResponse()
+        }
 
         suspend fun initialize() {
             session = null; sessionId = null; protocol = MCP_PROTOCOL_LATEST
@@ -154,9 +203,13 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
 
         suspend fun terminate() {
             if (sessionId == null) return
-            client.newCall(builder().delete().build()).awaitResponse().use { }
+            val call = client.newCall(builder().delete().build())
+            currentCall.set(call)
+            call.awaitResponse().use { }
         }
     }
+
+    companion object { const val MAX_RESOURCE_CHARS = 1_000_000 }
 }
 
 private fun mcpHttpFailure(code: Int) = SafeFailure(when (code) {

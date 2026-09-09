@@ -186,4 +186,57 @@ class McpClientTest {
             assertEquals("session-b", recorded[5].getHeader("Mcp-Session-Id"))
         }
     }
+
+    @Test fun resourceReadReturnsTextAndRejectsBlobOrOversize() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse()); mock.enqueue(accepted())
+            mock.enqueue(jsonResult(2, """{"contents":[{"uri":"file:///a.txt","mimeType":"text/plain","text":"hello"}]}"""))
+            mock.enqueue(ok())
+            assertEquals("hello", McpClient().readResource(server(mock), credentials, "file:///a.txt"))
+            mock.takeRequest(); mock.takeRequest()
+            val readBody = mock.takeRequest().body.readUtf8()
+            assertTrue(readBody.contains("\"method\":\"resources/read\"")); assertTrue(readBody.contains("\"uri\":\"file:///a.txt\""))
+
+            mock.enqueue(initResponse()); mock.enqueue(accepted())
+            mock.enqueue(jsonResult(2, """{"contents":[{"uri":"file:///b.bin","blob":"aGk="}]}"""))
+            mock.enqueue(ok())
+            try { McpClient().readResource(server(mock), credentials, "file:///b.bin"); fail("Blob-only resource accepted") }
+            catch (e: SafeFailure) { assertEquals(FailureKind.MCP, e.kind) }
+
+            mock.enqueue(initResponse()); mock.enqueue(accepted())
+            mock.enqueue(jsonResult(2, """{"contents":[{"uri":"file:///big.txt","text":"""" + "x".repeat(McpClient.MAX_RESOURCE_CHARS + 1) + """"}]}"""))
+            mock.enqueue(ok())
+            try { McpClient().readResource(server(mock), credentials, "file:///big.txt"); fail("Oversized resource accepted") }
+            catch (e: SafeFailure) { assertEquals(FailureKind.MCP, e.kind) }
+
+            try { McpClient().readResource(server(mock), credentials, " "); fail("Blank URI accepted") }
+            catch (_: IllegalArgumentException) { }
+        }
+    }
+
+    @Test fun promptGetFlattensTextAndEmbeddedResource() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse()); mock.enqueue(accepted())
+            mock.enqueue(jsonResult(2, """{"description":"d","messages":[{"role":"user","content":{"type":"text","text":"Summarize"}},{"role":"user","content":{"type":"resource","resource":{"uri":"file:///a.txt","text":"file body"}}},{"role":"assistant","content":{"type":"image","data":"aGk=","mimeType":"image/png"}}]}"""))
+            mock.enqueue(ok())
+            val messages = McpClient().getPrompt(server(mock), credentials, "summarize", mapOf("topic" to "x"))
+            assertEquals(listOf(McpPromptMessage("user", "Summarize"), McpPromptMessage("user", "file body")), messages)
+            assertEquals("Summarize\n\nfile body", promptInsertText(messages))
+            mock.takeRequest(); mock.takeRequest()
+            val getBody = mock.takeRequest().body.readUtf8()
+            assertTrue(getBody.contains("\"method\":\"prompts/get\"")); assertTrue(getBody.contains("\"arguments\":{\"topic\":\"x\"}"))
+        }
+    }
+
+    @Test fun cancellationStopsCallPromptly() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse(caps = """{"tools":{}}""")); mock.enqueue(accepted())
+            mock.enqueue(sse("""{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search"}]}}""").throttleBody(1, 1, java.util.concurrent.TimeUnit.SECONDS))
+            mock.enqueue(ok())
+            val job = launch { McpClient().discover(server(mock), credentials) }
+            delay(300)
+            withTimeout(5000) { job.cancelAndJoin() }
+            assertTrue(job.isCancelled)
+        }
+    }
 }
