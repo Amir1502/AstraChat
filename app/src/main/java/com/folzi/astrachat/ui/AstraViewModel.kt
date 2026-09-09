@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.*
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class AstraViewModel @Inject constructor(
-    val repository: ChatRepository, private val vault: SecretVault,
+    val repository: ChatRepository, private val mcp: McpRepository, private val vault: SecretVault,
     private val settingsStore: SettingsStore, private val gateway: ChatGateway,
 ) : ViewModel() {
     val settings = settingsStore.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
@@ -21,6 +21,8 @@ class AstraViewModel @Inject constructor(
     val providers = repository.providers.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val models = repository.models.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val usage = repository.usage.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val mcpServers = mcp.servers.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val mcpOverview = MutableStateFlow<McpDiscovery?>(null)
     val selected = MutableStateFlow<String?>(null)
     val messages = selected.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repository.dao.messages(id) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -208,6 +210,29 @@ class AstraViewModel @Inject constructor(
     fun resetStatistics() = action { require(!guard.get()); repository.dao.clearUsage(); live.value = null }
     suspend fun export(markdown: Boolean): String = if (markdown) repository.exportMarkdown() else repository.exportJson()
     fun imported(text: String) = action { require(!guard.get()); val count = repository.importJson(text); notice.value = Notice("Импортировано чатов: $count. Существующие данные сохранены.") }
+    fun saveMcpServer(server: McpServer, newKey: String?, headers: Map<String, String>?) = action {
+        mcp.save(server, newKey, headers); notice.value = Notice("MCP-сервер сохранён.")
+    }
+    fun deleteMcpServer(server: McpServer) = action {
+        mcp.delete(server)
+        if (mcpOverview.value?.serverId == server.id) mcpOverview.value = null
+    }
+    fun discoverMcp(server: McpServer) = networkAction {
+        val discovery = mcp.discover(server)
+        mcpOverview.value = discovery
+        notice.value = Notice("MCP-сервер подключён: инструментов ${discovery.tools.size}, ресурсов ${discovery.resources.size}, промптов ${discovery.prompts.size}.")
+    }
+    fun readMcpResource(server: McpServer, uri: String, done: () -> Unit) = networkAction { insertIntoDraft(mcp.readResource(server, uri)); done() }
+    fun insertMcpPrompt(server: McpServer, prompt: McpPrompt, arguments: Map<String, String>, done: () -> Unit) = networkAction {
+        insertIntoDraft(promptInsertText(mcp.getPrompt(server, prompt.name, arguments))); done()
+    }
+    fun hasMcpCredentials(id: String) = vault.exists(mcpVaultId(id))
+    private suspend fun insertIntoDraft(text: String) {
+        require(text.isNotBlank())
+        if (selected.value == null) { select(repository.createChat(settings.value.providerId, settings.value.modelId)); selectJob?.join() }
+        val current = draft.value
+        updateDraft(if (current.isBlank()) text else current.trimEnd() + "\n\n" + text)
+    }
     fun ioError() { notice.value = Notice("Не удалось прочитать или записать файл. Проверьте доступ и свободное место.") }
 }
 data class Notice(val text: String, val technical: String = "")
