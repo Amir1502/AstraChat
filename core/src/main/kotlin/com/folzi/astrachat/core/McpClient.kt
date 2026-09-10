@@ -14,7 +14,7 @@ private const val MAX_PAGES = 20
 private val BLOCKED_HEADERS = setOf("host", "content-length", "connection", "transfer-encoding", "accept", "content-type", "mcp-session-id", "mcp-protocol-version")
 
 /** MCP client for the Streamable HTTP transport (protocol revision 2025-06-18).
- * Sessions are ephemeral: every public call runs initialize -> operation -> DELETE. */
+ * One-shot calls run initialize -> operation -> DELETE; openSession() retains the session until close(). */
 class McpClient(private val base: OkHttpClient = OkHttpClient()) {
     private fun http(server: McpServer) = base.newBuilder()
         .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
@@ -24,7 +24,7 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
     suspend fun discover(server: McpServer, credentials: Credentials): McpDiscovery = withSession(server, credentials) {
         val s = session ?: throw SafeFailure(FailureKind.MCP)
         McpDiscovery(server.id, s,
-            if (s.capabilities.tools) list("tools/list", "tools") { o -> o.str("name").takeIf(String::isNotBlank)?.let { McpTool(it, o.str("title"), o.str("description"), o.obj("inputSchema")) } } else emptyList(),
+            if (s.capabilities.tools) list("tools/list", "tools", ::parseMcpTool) else emptyList(),
             if (s.capabilities.resources) list("resources/list", "resources") { o -> o.str("uri").takeIf(String::isNotBlank)?.let { McpResource(it, o.str("name"), o.str("description"), o.str("mimeType")) } } else emptyList(),
             if (s.capabilities.prompts) list("prompts/list", "prompts") { o -> o.str("name").takeIf(String::isNotBlank)?.let { McpPrompt(it, o.str("title"), o.str("description"), o.arr("arguments").filterIsInstance<JsonObject>().map { a -> McpPromptArgument(a.str("name"), a.str("description"), a["required"] == JsonPrimitive(true)) }.filter { a -> a.name.isNotBlank() }) } } else emptyList())
     }
@@ -64,26 +64,32 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
         else -> ""
     }
 
-    private suspend fun <T> withSession(server: McpServer, credentials: Credentials, block: suspend Rpc.() -> T): T = withContext(Dispatchers.IO) {
+    private fun newRpc(server: McpServer, credentials: Credentials): Rpc {
         require(server.timeoutSeconds in 10..600)
-        val rpc = Rpc(http(server), TransportPolicy.validate(server.url, server.allowLocalHttp), credentials)
+        return Rpc(http(server), TransportPolicy.validate(server.url, server.allowLocalHttp), credentials)
+    }
+
+    private suspend fun <T> withSession(server: McpServer, credentials: Credentials, block: suspend Rpc.() -> T): T = withContext(Dispatchers.IO) {
+        val rpc = newRpc(server, credentials)
         try {
-            // Coroutine cancellation must interrupt an in-flight blocking HTTP read immediately:
-            // a suspended watchdog child observes cancellation and cancels the current call.
-            coroutineScope {
-                val watchdog = launch { try { awaitCancellation() } finally { rpc.cancelCurrent() } }
-                try {
-                    rpc.initialize()
-                    // HTTP 404 on an established session means the server terminated it: start a new one exactly once.
-                    try { block(rpc) } catch (expired: Rpc.Expired) { rpc.initialize(); block(rpc) }
-                } finally { watchdog.cancel() }
+            rpc.guarded {
+                rpc.initialize()
+                // HTTP 404 on an established session means the server terminated it: start a new one exactly once.
+                try { block(rpc) } catch (expired: Rpc.Expired) { rpc.initialize(); block(rpc) }
             }
         } finally {
             withContext(NonCancellable) { withTimeoutOrNull(TERMINATE_TIMEOUT_MS) { runCatching { rpc.terminate() } } }
         }
     }
 
-    private class Rpc(private val client: OkHttpClient, private val url: HttpUrl, private val credentials: Credentials) {
+    /** Opens a retained session for the tool-calling loop; the caller MUST close it in a finally block. */
+    suspend fun openSession(server: McpServer, credentials: Credentials): McpToolSession = withContext(Dispatchers.IO) {
+        val rpc = newRpc(server, credentials)
+        rpc.guarded { rpc.initialize() }
+        McpToolSession(rpc)
+    }
+
+    internal class Rpc(private val client: OkHttpClient, private val url: HttpUrl, private val credentials: Credentials) {
         class Expired : Exception()
         class NotFound : Exception()
         var session: McpSession? = null; private set
@@ -93,6 +99,13 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
         private val currentCall = AtomicReference<Call?>(null)
 
         fun cancelCurrent() { currentCall.get()?.cancel() }
+
+        // Coroutine cancellation must interrupt an in-flight blocking HTTP read immediately:
+        // a suspended watchdog child observes cancellation and cancels the current call.
+        suspend fun <T> guarded(block: suspend () -> T): T = coroutineScope {
+            val watchdog = launch { try { awaitCancellation() } finally { cancelCurrent() } }
+            try { block() } finally { watchdog.cancel() }
+        }
 
         private fun builder(): Request.Builder = Request.Builder().url(url).apply {
             credentials.headers.forEach { (k, v) ->
@@ -210,6 +223,49 @@ class McpClient(private val base: OkHttpClient = OkHttpClient()) {
     }
 
     companion object { const val MAX_RESOURCE_CHARS = 1_000_000 }
+}
+
+/** Retained MCP session for the tool-calling loop; every operation keeps the watchdog and single 404-retry semantics. */
+class McpToolSession internal constructor(private val rpc: McpClient.Rpc) {
+    suspend fun tools(): List<McpTool> = rpc.guarded {
+        val session = rpc.session ?: throw SafeFailure(FailureKind.MCP)
+        if (!session.capabilities.tools) return@guarded emptyList()
+        try { rpc.list("tools/list", "tools", ::parseMcpTool) }
+        catch (expired: McpClient.Rpc.Expired) { rpc.initialize(); rpc.list("tools/list", "tools", ::parseMcpTool) }
+    }
+    suspend fun callTool(name: String, arguments: JsonObject?): McpToolResult = rpc.guarded {
+        require(name.isNotBlank())
+        val params = buildJsonObject {
+            put("name", name)
+            put("arguments", arguments ?: JsonObject(emptyMap()))
+        }
+        val result = try {
+            try { rpc.request("tools/call", params) }
+            catch (expired: McpClient.Rpc.Expired) { rpc.initialize(); rpc.request("tools/call", params) }
+        } catch (missing: McpClient.Rpc.NotFound) { throw SafeFailure(FailureKind.MCP) }
+        val text = toolResultText(result)
+        val capped = if (text.length > McpClient.MAX_RESOURCE_CHARS) text.take(McpClient.MAX_RESOURCE_CHARS) + "\n…[обрезано]" else text
+        McpToolResult(capped, result["isError"] == JsonPrimitive(true))
+    }
+    suspend fun close() {
+        withContext(NonCancellable) { withTimeoutOrNull(TERMINATE_TIMEOUT_MS) { runCatching { rpc.terminate() } } }
+    }
+}
+
+internal fun parseMcpTool(o: JsonObject): McpTool? =
+    o.str("name").takeIf(String::isNotBlank)?.let { McpTool(it, o.str("title"), o.str("description"), o.obj("inputSchema")) }
+
+/** Renders tools/call result content blocks; non-text blocks become safe markers (spec 2025-06-18). */
+internal fun toolResultText(result: JsonObject): String {
+    val blocks = result.arr("content").filterIsInstance<JsonObject>()
+    val text = blocks.joinToString("\n") { b ->
+        when (b.str("type")) {
+            "text" -> b.str("text")
+            "resource" -> b.obj("resource").str("text").ifEmpty { "[resource ${b.obj("resource").str("uri")}]" }
+            else -> "[${b.str("type").ifEmpty { "content" }}]"
+        }
+    }.trim()
+    return text.ifEmpty { result.obj("structuredContent").takeIf { it.isNotEmpty() }?.toString().orEmpty() }
 }
 
 private fun mcpHttpFailure(code: Int) = SafeFailure(when (code) {

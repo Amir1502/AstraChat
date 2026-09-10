@@ -273,4 +273,100 @@ class McpClientTest {
         assertEquals(listOf("get_weather"), toolCallNames(encoded))
         assertEquals(emptyList<String>(), toolCallNames("broken"))
     }
+
+    @Test fun retainedSessionListsAndCallsTools() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse(caps = """{"tools":{}}""")); mock.enqueue(accepted())
+            mock.enqueue(jsonResult(2, """{"tools":[{"name":"get weather!","description":"d","inputSchema":{"type":"object"}}]}"""))
+            mock.enqueue(jsonResult(3, """{"content":[{"type":"text","text":"Sunny"}],"isError":false}"""))
+            mock.enqueue(ok())
+            val session = McpClient().openSession(server(mock), credentials)
+            try {
+                assertEquals(listOf("get weather!"), session.tools().map { it.name })
+                assertEquals(McpToolResult("Sunny", false), session.callTool("get weather!", buildJsonObject { put("city", "Moscow") }))
+            } finally { session.close() }
+            val recorded = List(mock.requestCount) { mock.takeRequest() }
+            val bodies = recorded.map { it.body.readUtf8() }
+            assertEquals(5, bodies.size)
+            assertEquals(1, bodies.count { it.contains("\"method\":\"initialize\"") })
+            assertTrue(bodies[3].contains("\"method\":\"tools/call\""))
+            assertTrue(bodies[3].contains("\"name\":\"get weather!\""))
+            assertTrue(bodies[3].contains("\"arguments\":{\"city\":\"Moscow\"}"))
+            assertEquals("DELETE", recorded[4].method)
+            assertEquals("test-session", recorded[4].getHeader("Mcp-Session-Id"))
+        }
+    }
+
+    @Test fun toolResultMarkersStructuredFallbackAndErrorFlag() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse(caps = """{"tools":{}}""")); mock.enqueue(accepted())
+            mock.enqueue(jsonResult(2, """{"content":[{"type":"image","data":"aGk=","mimeType":"image/png"},{"type":"text","text":"chart"}],"isError":true}"""))
+            mock.enqueue(jsonResult(3, """{"content":[],"structuredContent":{"temp":20}}"""))
+            mock.enqueue(ok())
+            val session = McpClient().openSession(server(mock), credentials)
+            try {
+                val flagged = session.callTool("a", null)
+                assertEquals("[image]\nchart", flagged.text); assertTrue(flagged.isError)
+                val structured = session.callTool("b", null)
+                assertEquals("""{"temp":20}""", structured.text); assertFalse(structured.isError)
+            } finally { session.close() }
+        }
+    }
+
+    @Test fun callToolNotFoundBecomesSafeMcpFailure() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse(caps = """{"tools":{}}""")); mock.enqueue(accepted())
+            mock.enqueue(jsonError(2, -32601, "Method not found")); mock.enqueue(ok())
+            val session = McpClient().openSession(server(mock), credentials)
+            try {
+                session.callTool("missing", null); fail("Not-found accepted")
+            } catch (failure: SafeFailure) {
+                assertEquals(FailureKind.MCP, failure.kind)
+            } finally { session.close() }
+        }
+    }
+
+    @Test fun callToolSurvivesExpiredSessionOnce() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse(sessionId = "a")); mock.enqueue(accepted())
+            mock.enqueue(MockResponse().setResponseCode(404))
+            mock.enqueue(initResponse(sessionId = "b")); mock.enqueue(accepted())
+            mock.enqueue(jsonResult(2, """{"content":[{"type":"text","text":"ok"}]}"""))
+            mock.enqueue(ok())
+            val session = McpClient().openSession(server(mock), credentials)
+            try {
+                assertEquals("ok", session.callTool("t", null).text)
+            } finally { session.close() }
+            val recorded = List(mock.requestCount) { mock.takeRequest() }
+            val bodies = recorded.map { it.body.readUtf8() }
+            assertEquals(7, bodies.size)
+            assertEquals(2, bodies.count { it.contains("\"method\":\"initialize\"") })
+            assertEquals(2, bodies.count { it.contains("\"method\":\"tools/call\"") })
+            assertEquals("DELETE", recorded[6].method)
+            assertEquals("b", recorded[6].getHeader("Mcp-Session-Id"))
+        }
+    }
+
+    @Test fun sessionToolsRespectCapabilitiesAndCloseTerminates() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse()); mock.enqueue(accepted()); mock.enqueue(ok())
+            val session = McpClient().openSession(server(mock), credentials)
+            try { assertTrue(session.tools().isEmpty()) } finally { session.close() }
+            assertEquals(3, mock.requestCount)
+        }
+    }
+
+    @Test fun sessionCancellationStopsCallPromptly() = runBlocking {
+        MockWebServer().use { mock ->
+            mock.enqueue(initResponse(caps = """{"tools":{}}""")); mock.enqueue(accepted())
+            mock.enqueue(sse("""{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"x"}]}}""").throttleBody(1, 1, java.util.concurrent.TimeUnit.SECONDS))
+            mock.enqueue(ok())
+            val session = McpClient().openSession(server(mock), credentials)
+            val job = launch { session.callTool("slow", null) }
+            delay(300)
+            withTimeout(5000) { job.cancelAndJoin() }
+            assertTrue(job.isCancelled)
+            session.close()
+        }
+    }
 }
