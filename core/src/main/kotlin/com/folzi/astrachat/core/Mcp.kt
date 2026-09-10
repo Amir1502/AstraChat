@@ -31,3 +31,29 @@ data class McpPromptMessage(val role: String, val text: String)
 /** Prompt templates arrive as role-tagged messages; the chat draft receives the user-visible text. */
 fun promptInsertText(messages: List<McpPromptMessage>): String =
     messages.filter { it.role == "user" }.ifEmpty { messages }.joinToString("\n\n") { it.text }.trim()
+
+data class McpToolResult(val text: String, val isError: Boolean)
+data class ExposedTool(val name: String, val serverId: String, val tool: McpTool)
+
+/** CHAT_COMPLETIONS function names must match ^[a-zA-Z0-9_-]{1,64}$. */
+fun sanitizeToolName(name: String): String =
+    name.map { c -> if (c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_' || c == '-') c else '_' }
+        .joinToString("").take(64).ifBlank { "tool" }
+
+/** Deterministic exposed names across servers; collisions get a stable server-scoped suffix. */
+fun exposeTools(toolsByServer: Map<String, List<McpTool>>): List<ExposedTool> {
+    val out = LinkedHashMap<String, ExposedTool>()
+    toolsByServer.forEach { (serverId, tools) ->
+        tools.forEach { tool ->
+            val base = sanitizeToolName(tool.name)
+            var exposed = base
+            var suffix = 2
+            while (exposed in out) {
+                exposed = (base.take(52) + "_" + serverId.take(4) + "_" + suffix).take(64)
+                suffix++
+            }
+            out[exposed] = ExposedTool(exposed, serverId, tool)
+        }
+    }
+    return out.values.toList()
+}

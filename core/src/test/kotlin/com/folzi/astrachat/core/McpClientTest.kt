@@ -3,6 +3,8 @@ package com.folzi.astrachat.core
 import kotlinx.coroutines.*
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -238,5 +240,37 @@ class McpClientTest {
             withTimeout(5000) { job.cancelAndJoin() }
             assertTrue(job.isCancelled)
         }
+    }
+
+    @Test fun toolNamesSanitizedForChatCompletions() {
+        assertEquals("get_weather", sanitizeToolName("get weather"))
+        assertEquals("db_query-1", sanitizeToolName("db.query-1"))
+        assertEquals("___", sanitizeToolName("!!!"))
+        assertEquals("tool", sanitizeToolName(""))
+        assertEquals(64, sanitizeToolName("x".repeat(100)).length)
+        assertTrue(sanitizeToolName("имя.tool").matches(Regex("^[a-zA-Z0-9_-]{1,64}$")))
+    }
+
+    @Test fun exposeToolsQualifiesCollisionsDeterministically() {
+        val duplicated = McpTool("search")
+        val first = exposeTools(linkedMapOf("srv-aaa" to listOf(duplicated), "srv-bbb" to listOf(duplicated)))
+        val second = exposeTools(linkedMapOf("srv-aaa" to listOf(duplicated), "srv-bbb" to listOf(duplicated)))
+        assertEquals(first, second)
+        assertEquals(2, first.size)
+        assertEquals("search", first[0].name); assertEquals("srv-aaa", first[0].serverId)
+        assertEquals("search_srv-_2", first[1].name); assertEquals("srv-bbb", first[1].serverId)
+        assertTrue(first.all { it.name.matches(Regex("^[a-zA-Z0-9_-]{1,64}$")) })
+        assertEquals(listOf("search"), exposeTools(linkedMapOf("s" to listOf(duplicated))).map { it.name })
+        assertEquals(emptyList<ExposedTool>(), exposeTools(emptyMap()))
+    }
+
+    @Test fun persistedToolCallsParseLeniently() {
+        val calls = listOf(ToolCall("c1", "get_weather", """{"city":"Moscow"}"""))
+        val encoded = json.encodeToString(calls)
+        assertEquals(calls, parseToolCalls(encoded))
+        assertEquals(emptyList<ToolCall>(), parseToolCalls("garbage"))
+        assertEquals(emptyList<ToolCall>(), parseToolCalls(""))
+        assertEquals(listOf("get_weather"), toolCallNames(encoded))
+        assertEquals(emptyList<String>(), toolCallNames("broken"))
     }
 }

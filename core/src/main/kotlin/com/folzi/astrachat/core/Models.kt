@@ -1,6 +1,7 @@
 package com.folzi.astrachat.core
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.*
 
 val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -30,12 +31,15 @@ data class Generation(
     val stops: List<String> = emptyList(), val reasoning: String = "", val extraJson: String = "{}",
 )
 @Serializable
-data class Turn(val role: String, val text: String)
-data class ChatRequest(val provider: Provider, val model: Model, val credentials: Credentials, val turns: List<Turn>, val generation: Generation)
+data class ToolCall(val id: String, val name: String, val arguments: String)
+data class ToolCallFragment(val index: Int, val id: String = "", val name: String = "", val argumentsDelta: String = "")
+@Serializable
+data class Turn(val role: String, val text: String, val toolCalls: List<ToolCall> = emptyList(), val toolCallId: String = "")
+data class ChatRequest(val provider: Provider, val model: Model, val credentials: Credentials, val turns: List<Turn>, val generation: Generation, val tools: List<McpTool> = emptyList())
 data class Usage(val input: Long? = null, val output: Long? = null, val reasoning: Long? = null, val cached: Long? = null, val total: Long? = null) {
     fun merge(next: Usage) = Usage(next.input ?: input, next.output ?: output, next.reasoning ?: reasoning, next.cached ?: cached, next.total ?: total)
 }
-data class Chunk(val text: String = "", val usage: Usage = Usage(), val terminal: Boolean = false)
+data class Chunk(val text: String = "", val usage: Usage = Usage(), val terminal: Boolean = false, val toolFragments: List<ToolCallFragment> = emptyList(), val toolCalls: List<ToolCall> = emptyList())
 data class Totals(val input: Long, val output: Long, val total: Long, val reasoning: Long?, val cached: Long?, val estimated: Boolean)
 
 fun usageTotals(usage: Usage, turns: List<Turn>, text: String, complete: Boolean): Totals {
@@ -61,3 +65,9 @@ fun JsonObject.obj(key: String): JsonObject = this[key] as? JsonObject ?: JsonOb
 fun JsonObject.arr(key: String): JsonArray = this[key] as? JsonArray ?: JsonArray(emptyList())
 fun JsonObject.str(key: String): String = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
 fun JsonObject.num(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
+
+/** Lenient parse of persisted tool_calls JSON; a corrupt history row must never crash the app. */
+fun parseToolCalls(value: String): List<ToolCall> =
+    if (value.isBlank()) emptyList() else runCatching { json.decodeFromString<List<ToolCall>>(value) }.getOrDefault(emptyList())
+
+fun toolCallNames(value: String): List<String> = parseToolCalls(value).map { it.name }
