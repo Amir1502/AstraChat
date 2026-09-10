@@ -1,5 +1,6 @@
 package com.folzi.astrachat.ui
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.folzi.astrachat.core.*
@@ -20,6 +21,7 @@ private const val TOOL_RESULT_CHARS = 32_000
 class AstraViewModel @Inject constructor(
     val repository: ChatRepository, private val mcp: McpRepository, private val vault: SecretVault,
     private val settingsStore: SettingsStore, private val gateway: ChatGateway,
+    private val files: AttachmentStore,
 ) : ViewModel() {
     val settings = settingsStore.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
     val chats = repository.chats.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -32,6 +34,7 @@ class AstraViewModel @Inject constructor(
     val messages = selected.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repository.dao.messages(id) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val draft = MutableStateFlow("")
+    val pendingAttachments = MutableStateFlow<List<Attachment>>(emptyList())
     val live = MutableStateFlow<LiveRequest?>(null)
     val notice = MutableStateFlow<Notice?>(null)
     val working = MutableStateFlow(false)
@@ -61,6 +64,21 @@ class AstraViewModel @Inject constructor(
         val id = selected.value ?: return
         draftJob?.cancel()
         draftJob = action { delay(250); repository.dao.saveDraft(DraftRow(id, value)) }
+    }
+    /** Imports a picked file into the composer. Size/format problems surface as a concrete Russian notice. */
+    fun attachFile(uri: Uri) = action {
+        try {
+            require(pendingAttachments.value.size < MAX_ATTACHMENTS_PER_MESSAGE) { "Не больше $MAX_ATTACHMENTS_PER_MESSAGE файлов в одном сообщении." }
+            pendingAttachments.update { it + files.import(uri) }
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (error: Exception) {
+            notice.value = if (error is IllegalArgumentException && !error.message.isNullOrBlank()) Notice(error.message.orEmpty())
+                else Notice(safeFailure(error).kind.messageRu)
+        }
+    }
+    fun removeAttachment(id: String) = action {
+        pendingAttachments.update { list -> list.filterNot { it.id == id } }
+        files.delete(id)
     }
     fun newChat() = action {
         val id = repository.createChat(settings.value.providerId, settings.value.modelId)
@@ -92,13 +110,16 @@ class AstraViewModel @Inject constructor(
         require(!guard.get())
         val history = repository.dao.history(row.chatId)
         val index = history.indexOfFirst { it.id == row.id }
-        val user = history.take(index).lastOrNull { it.role == "user" } ?: return@action
+        val user = history.take(index).lastOrNull { it.role == "user" && (it.text.isNotBlank() || it.attachments.isNotBlank()) } ?: return@action
         val id = repository.branch(row.chatId, user.id, false)
-        select(id); selectJob?.join(); updateDraft(user.text); send()
+        select(id); selectJob?.join(); updateDraft(user.text)
+        pendingAttachments.value = parseAttachments(user.attachments).map { a -> if (a.isImage) files.load(a) else a }
+        send()
     }
     fun send() {
         val input = draft.value.trim()
-        if (input.isEmpty() || !guard.compareAndSet(false, true)) return
+        val attachments = pendingAttachments.value
+        if ((input.isEmpty() && attachments.isEmpty()) || !guard.compareAndSet(false, true)) return
         draftJob?.cancel()
         generationJob = viewModelScope.launch {
             var assistant: MessageRow? = null
@@ -132,7 +153,7 @@ class AstraViewModel @Inject constructor(
                 val id = selected.value ?: repository.createChat(p.id, m.id).also { selected.value = it }
                 val credentials = withContext(Dispatchers.IO) { vault.read(p.id) }
                 val toolRounds = p.protocol == Protocol.CHAT_COMPLETIONS
-                var currentTurns = historyTurns(repository.dao.history(id), toolRounds) + Turn("user", input)
+                var currentTurns = historyTurns(repository.dao.history(id), toolRounds) + Turn("user", input, attachments = attachments)
                 val route = LinkedHashMap<String, Pair<McpToolSession, McpTool>>()
                 val tools = mutableListOf<McpTool>()
                 if (toolRounds) {
@@ -151,8 +172,10 @@ class AstraViewModel @Inject constructor(
                         tools += exposed.tool.copy(name = exposed.name)
                     }
                 }
-                assistant = repository.appendExchange(id, input, p.id, m.id)
+                assistant = repository.appendExchange(id, input, p.id, m.id,
+                    if (attachments.isEmpty()) "" else json.encodeToString(attachments.map(Attachment::forStorage)))
                 draft.value = ""
+                pendingAttachments.value = emptyList()
                 var rounds = 0
                 while (true) {
                     val contextEstimate = usageTotals(Usage(), listOf(Turn("system", s.generation.system)) + currentTurns, "", false).input
@@ -201,21 +224,31 @@ class AstraViewModel @Inject constructor(
         repository.dao.chat(chatId)?.let { repository.dao.saveChat(it.copy(mcpServerIds = serverIds.sorted().joinToString(","))) }
     }
     /** Rebuilds provider turns from persisted rows. Tool structures only survive on CHAT_COMPLETIONS chats;
-     *  unpaired tool rows and orphan tool_calls are dropped so the wire request stays valid. */
-    private fun historyTurns(rows: List<MessageRow>, toolRounds: Boolean): List<Turn> {
+     *  unpaired tool rows and orphan tool_calls are dropped so the wire request stays valid.
+     *  History image attachments are reloaded from disk within a per-request byte budget. */
+    private suspend fun historyTurns(rows: List<MessageRow>, toolRounds: Boolean): List<Turn> {
         val complete = rows.filter { it.state == "complete" }
-        if (!toolRounds) return complete.filter { it.role != "tool" && it.text.isNotBlank() }.map { Turn(it.role, it.text) }
+        var imageBudget = MAX_REQUEST_IMAGE_BYTES
+        val loaded = complete.map { row ->
+            row to parseAttachments(row.attachments).map { a ->
+                if (a.isImage && a.sizeBytes <= imageBudget) { imageBudget -= a.sizeBytes; files.load(a) } else a
+            }
+        }
+        if (!toolRounds) {
+            return loaded.filter { (row, atts) -> row.role != "tool" && (row.text.isNotBlank() || atts.isNotEmpty()) }
+                .map { (row, atts) -> Turn(row.role, row.text, attachments = atts) }
+        }
         val resultIds = complete.filter { it.role == "tool" }.map { it.toolCallId }.toSet()
         val callsByRow = complete.associate { row ->
             row.id to if (row.role == "assistant" && row.toolCalls.isNotBlank()) parseToolCalls(row.toolCalls).filter { it.id in resultIds } else emptyList()
         }
         val validIds = callsByRow.values.flatten().map { it.id }.toSet()
-        return complete.mapNotNull { row ->
+        return loaded.mapNotNull { (row, atts) ->
             when {
                 row.role == "tool" -> if (row.toolCallId in validIds) Turn("tool", row.text, toolCallId = row.toolCallId) else null
                 else -> {
                     val calls = callsByRow.getValue(row.id)
-                    if (row.text.isNotBlank() || calls.isNotEmpty()) Turn(row.role, row.text, calls) else null
+                    if (row.text.isNotBlank() || calls.isNotEmpty() || atts.isNotEmpty()) Turn(row.role, row.text, calls, attachments = atts) else null
                 }
             }
         }

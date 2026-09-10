@@ -31,7 +31,8 @@ class AstraViewModelTest {
         `when`(dao.draft(anyString())).thenReturn(null)
         `when`(dao.chat(anyString())).thenReturn(null)
         `when`(repo.createChat("openai", "")).thenReturn("chat-1")
-        val vm = AstraViewModel(repo, mcpRepo, vault, store, api)
+        val files = mock(AttachmentStore::class.java)
+        val vm = AstraViewModel(repo, mcpRepo, vault, store, api, files)
         try {
             runCurrent(); vm.newChat(); runCurrent()
             assertEquals("chat-1", vm.selected.value)
@@ -65,7 +66,8 @@ class AstraViewModelTest {
         `when`(store.settings).thenReturn(flowOf(AppSettings()))
         `when`(dao.allChats()).thenReturn(emptyList())
         `when`(mcpRepo.discover(McpServer("s", "Test", "https://example.com/mcp"))).thenAnswer { throw SafeFailure(FailureKind.MCP) }
-        val vm = AstraViewModel(repo, mcpRepo, vault, store, api)
+        val files = mock(AttachmentStore::class.java)
+        val vm = AstraViewModel(repo, mcpRepo, vault, store, api, files)
         try {
             runCurrent()
             vm.discoverMcp(McpServer("s", "Test", "https://example.com/mcp")); advanceUntilIdle()
@@ -92,7 +94,8 @@ class AstraViewModelTest {
         `when`(mcpRepo.getPrompt(McpServer("s", "T", "https://example.com/mcp"), "p", emptyMap())).thenReturn(
             listOf(McpPromptMessage("user", "Первый"), McpPromptMessage("assistant", "ignored"), McpPromptMessage("user", "Второй")),
         )
-        val vm = AstraViewModel(repo, mcpRepo, vault, store, api)
+        val files = mock(AttachmentStore::class.java)
+        val vm = AstraViewModel(repo, mcpRepo, vault, store, api, files)
         try {
             runCurrent()
             var navigated = false
@@ -133,6 +136,11 @@ class AstraViewModelTest {
         anyList<Pair<ToolCall, String>>()
         return emptyList()
     }
+    @SuppressLint("CheckResult")
+    private fun anyAttachment(): Attachment {
+        any(Attachment::class.java)
+        return Attachment("", "", "", 0)
+    }
     // The generation ticker re-schedules forever on the virtual clock and vault.read hops through
     // the real IO dispatcher, so settle with bounded real-time polling instead of advanceUntilIdle.
     private suspend fun TestScope.awaitSettled(vm: AstraViewModel, timeoutMs: Long = 15_000) {
@@ -170,7 +178,8 @@ class AstraViewModelTest {
         `when`(dao.history(anyString())).thenReturn(emptyList())
         `when`(repo.appendExchange("chat-1", "Погода?", "openai", "gpt-test")).thenReturn(MessageRow("a1", "chat-1", 1, "assistant", "", "generating"))
         `when`(repo.appendToolResults("chat-1", 1L, listOf(weatherCall to "Sunny"))).thenReturn(MessageRow("a2", "chat-1", 3, "assistant", "", "generating"))
-        return Quintuple(repo, vault, mcpRepo, session, AstraViewModel(repo, mcpRepo, vault, store, gateway))
+        val files = mock(AttachmentStore::class.java)
+        return Quintuple(repo, vault, mcpRepo, session, AstraViewModel(repo, mcpRepo, vault, store, gateway, files))
     }
     private class Quintuple(val repo: ChatRepository, val vault: SecretVault, val mcpRepo: McpRepository, val session: McpToolSession, val vm: AstraViewModel)
 
@@ -295,7 +304,8 @@ class AstraViewModelTest {
         `when`(dao.draft(anyString())).thenReturn(null)
         `when`(dao.history(anyString())).thenReturn(emptyList())
         `when`(repo.appendExchange("chat-1", "Погода?", "anthropic", "claude-test")).thenReturn(MessageRow("a1", "chat-1", 1, "assistant", "", "generating"))
-        val vm = AstraViewModel(repo, mcpRepo, vault, store, gateway)
+        val files = mock(AttachmentStore::class.java)
+        val vm = AstraViewModel(repo, mcpRepo, vault, store, gateway, files)
         try {
             runCurrent()
             `when`(vault.read(anyString())).thenReturn(Credentials())
@@ -305,5 +315,70 @@ class AstraViewModelTest {
             assertTrue(gateway.requests.single().tools.isEmpty())
             verify(mcpRepo, never()).openSession(anyServer())
         } finally { vm.viewModelScope.cancel(); Dispatchers.resetMain() }
+    }
+
+    private class PlainFixture(val repo: ChatRepository, val vault: SecretVault, val files: AttachmentStore, val vm: AstraViewModel)
+    private suspend fun plainFixture(gateway: ChatGateway, history: List<MessageRow> = emptyList()): PlainFixture {
+        val repo = mock(ChatRepository::class.java); val dao = mock(AstraDao::class.java)
+        val store = mock(SettingsStore::class.java); val vault = mock(SecretVault::class.java)
+        val mcpRepo = mock(McpRepository::class.java); val files = mock(AttachmentStore::class.java)
+        `when`(repo.dao).thenReturn(dao)
+        `when`(repo.chats).thenReturn(flowOf(emptyList()))
+        `when`(repo.providers).thenReturn(flowOf(listOf(toolProvider)))
+        `when`(repo.models).thenReturn(flowOf(listOf(toolModel)))
+        `when`(repo.usage).thenReturn(flowOf(emptyList()))
+        `when`(mcpRepo.servers).thenReturn(flowOf(emptyList()))
+        `when`(store.settings).thenReturn(flowOf(AppSettings()))
+        val chat = ChatRow("chat-1", "Чат", providerId = "openai", modelId = "gpt-test")
+        `when`(dao.allChats()).thenReturn(listOf(chat))
+        `when`(dao.chat(anyString())).thenReturn(chat)
+        `when`(dao.messages(anyString())).thenReturn(flowOf(emptyList()))
+        `when`(dao.draft(anyString())).thenReturn(null)
+        `when`(dao.history(anyString())).thenReturn(history)
+        `when`(vault.read(anyString())).thenReturn(Credentials())
+        val vm = AstraViewModel(repo, mcpRepo, vault, store, gateway, files)
+        return PlainFixture(repo, vault, files, vm)
+    }
+
+    @Test fun sendWithAttachmentPersistsMetadataAndSendsImage() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val gateway = FakeGateway(listOf(listOf(Chunk("Вижу файл", terminal = true))))
+        val f = plainFixture(gateway)
+        val savedJson = mutableListOf<String>()
+        doAnswer { savedJson += it.getArgument<String>(4); MessageRow("a1", "chat-1", 0, "assistant", "", "generating") }
+            .`when`(f.repo).appendExchange(anyString(), anyString(), anyString(), anyString(), anyString())
+        val image = Attachment("att-1", "photo.png", "image/png", 3, base64 = "AAAA")
+        try {
+            runCurrent()
+            f.vm.pendingAttachments.value = listOf(image)
+            f.vm.send()
+            awaitSettled(f.vm)
+            assertNull(f.vm.notice.value)
+            assertEquals(listOf(Turn("user", "", attachments = listOf(image))), gateway.requests.single().turns)
+            val persisted = savedJson.single()
+            assertTrue(persisted.contains("photo.png")); assertFalse(persisted.contains("AAAA"))
+            assertTrue(f.vm.pendingAttachments.value.isEmpty())
+        } finally { f.vm.viewModelScope.cancel(); Dispatchers.resetMain() }
+    }
+
+    @Test fun historyReloadsImageAttachmentsWithinBudget() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val gateway = FakeGateway(listOf(listOf(Chunk("ok", terminal = true))))
+        val stored = MessageRow("u1", "chat-1", 0, "user", "Смотри", "complete",
+            attachments = """[{"id":"att-1","name":"photo.png","mimeType":"image/png","sizeBytes":3}]""")
+        val f = plainFixture(gateway, listOf(stored))
+        `when`(f.repo.appendExchange("chat-1", "Ещё", "openai", "gpt-test", "")).thenReturn(MessageRow("a1", "chat-1", 1, "assistant", "", "generating"))
+        `when`(f.files.load(anyAttachment())).thenAnswer { it.getArgument<Attachment>(0).copy(base64 = "BBBB") }
+        try {
+            runCurrent()
+            f.vm.updateDraft("Ещё"); f.vm.send()
+            awaitSettled(f.vm)
+            assertNull(f.vm.notice.value)
+            val turns = gateway.requests.single().turns
+            assertEquals(2, turns.size)
+            assertEquals("Смотри", turns[0].text)
+            assertEquals(listOf(Attachment("att-1", "photo.png", "image/png", 3, base64 = "BBBB")), turns[0].attachments)
+            assertEquals("Ещё", turns[1].text)
+        } finally { f.vm.viewModelScope.cancel(); Dispatchers.resetMain() }
     }
 }

@@ -36,7 +36,7 @@ class ChatRepository @Inject constructor(val db: AstraDatabase) {
         dao.saveMessage(MessageRow(newId(), chatId, position, "user", input, attachments = attachmentsJson))
         val assistant = MessageRow(newId(), chatId, position + 1, "assistant", "", "generating")
         dao.saveMessage(assistant); dao.saveDraft(DraftRow(chatId, ""))
-        dao.saveChat(chat.copy(title = if (chat.title == "Новый чат") input.take(60) else chat.title,
+        dao.saveChat(chat.copy(title = if (chat.title == "Новый чат") input.take(60).ifBlank { parseAttachments(attachmentsJson).firstOrNull()?.name?.take(60) ?: "Новый чат" } else chat.title,
             providerId = providerId, modelId = modelId, updated = System.currentTimeMillis()))
         assistant
     }
