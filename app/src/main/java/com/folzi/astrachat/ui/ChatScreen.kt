@@ -37,10 +37,13 @@ fun ChatScreen(vm: AstraViewModel, menu: (() -> Unit)?, parameters: () -> Unit, 
     val draft by vm.draft.collectAsStateWithLifecycle()
     val live by vm.live.collectAsStateWithLifecycle()
     val usage by vm.usage.collectAsStateWithLifecycle()
+    val mcpServers by vm.mcpServers.collectAsStateWithLifecycle()
     var picker by remember { mutableStateOf(false) }
+    var mcpPicker by remember { mutableStateOf(false) }
     val current = chats.firstOrNull { it.id == selected }
     val pid = current?.providerId?.ifBlank { settings.providerId } ?: settings.providerId
     val model = current?.modelId?.ifBlank { settings.modelId } ?: settings.modelId
+    val mcpIds = remember(current?.mcpServerIds) { current?.mcpServerIds.orEmpty().split(',').filter { it.isNotBlank() } }
     val contextEstimate = remember(settings.generation.system, messages, draft) {
         TokenMath.estimate(settings.generation.system + messages.joinToString { it.text } + draft)
     }
@@ -108,6 +111,7 @@ fun ChatScreen(vm: AstraViewModel, menu: (() -> Unit)?, parameters: () -> Unit, 
                                 )
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Action("Модель") { picker = true }
+                                    Action(if (mcpIds.isEmpty()) "MCP" else "MCP · ${mcpIds.size}") { mcpPicker = true }
                                     SectionLabel("≈ ${contextEstimate} ток. · оценка")
                                     Spacer(Modifier.weight(1f))
                                     if (live?.active == true) {
@@ -197,6 +201,33 @@ fun ChatScreen(vm: AstraViewModel, menu: (() -> Unit)?, parameters: () -> Unit, 
             dismissButton = { Action("Закрыть") { picker = false } },
         )
     }
+    if (mcpPicker) {
+        val chatCompletions = providers.firstOrNull { it.id == pid }?.protocol == Protocol.CHAT_COMPLETIONS
+        AlertDialog(
+            onDismissRequest = { mcpPicker = false },
+            shape = MaterialTheme.shapes.large,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            title = { Text("MCP-инструменты чата", style = MaterialTheme.typography.titleLarge) },
+            text = {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (!chatCompletions) item {
+                        Text("Текущий провайдер использует другой протокол: выбор сохраняется, но инструменты не отправляются в запрос.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (mcpServers.isEmpty()) item {
+                        Text("Сначала добавьте MCP-серверы: меню истории → «MCP-серверы».", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    items(mcpServers, key = { it.id }) { s ->
+                        Toggle(s.name.ifBlank { s.url }, s.id in mcpIds) { checked ->
+                            current?.let { chat ->
+                                vm.setChatMcpServers(chat.id, if (checked) mcpIds.toSet() + s.id else mcpIds.toSet() - s.id)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { Action("Готово") { mcpPicker = false } },
+        )
+    }
 }
 
 /** One transcript turn: speaker tag, rendered markdown, state note and quiet actions. No bubbles. */
@@ -207,12 +238,22 @@ private fun TranscriptRow(row: MessageRow, vm: AstraViewModel, scale: Float, ani
     var delete by remember { mutableStateOf(false) }
     var more by remember { mutableStateOf(false) }
     val mine = row.role == "user"
+    val tool = row.role == "tool"
     Column(Modifier.fillMaxWidth().then(if (animations) Modifier.animateContentSize() else Modifier), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RoleLabel(if (mine) "Вы" else "Astra", accented = !mine)
+            RoleLabel(if (mine) "Вы" else if (tool) "Инструмент${if (row.toolName.isNotBlank()) " · ${row.toolName}" else ""}" else "Astra", accented = !mine && !tool)
             if (row.state == "generating") {
                 Text("генерация…", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        if (row.toolCalls.isNotBlank()) {
+            val names = toolCallNames(row.toolCalls)
+            if (names.isNotEmpty()) Text(
+                "Вызваны инструменты: ${names.joinToString(", ")}",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         if (row.text.isNotEmpty()) {
             Markdown(row.text, scale)
