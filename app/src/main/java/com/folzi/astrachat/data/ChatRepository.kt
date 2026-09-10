@@ -11,7 +11,7 @@ import kotlinx.serialization.encodeToString
 
 fun newId(): String = UUID.randomUUID().toString()
 @Serializable
-data class Backup(val version: Int = 1, val chats: List<ChatRow>, val messages: List<MessageRow>, val branches: List<BranchRow>)
+data class Backup(val version: Int = 2, val chats: List<ChatRow>, val messages: List<MessageRow>, val branches: List<BranchRow>)
 @Singleton
 class ChatRepository @Inject constructor(val db: AstraDatabase) {
     val dao = db.dao()
@@ -43,6 +43,17 @@ class ChatRepository @Inject constructor(val db: AstraDatabase) {
     suspend fun checkpoint(message: MessageRow, usage: UsageRow) = db.withTransaction {
         dao.saveMessage(message); dao.saveUsage(usage)
     }
+    /** Persists tool results after the assistant tool-call row and opens the next assistant placeholder. */
+    suspend fun appendToolResults(chatId: String, afterPosition: Long, results: List<Pair<ToolCall, String>>): MessageRow = db.withTransaction {
+        var position = afterPosition
+        results.forEach { (call, text) ->
+            position++
+            dao.saveMessage(MessageRow(newId(), chatId, position, "tool", text, "complete", toolCallId = call.id, toolName = call.name))
+        }
+        val next = MessageRow(newId(), chatId, position + 1, "assistant", "", "generating")
+        dao.saveMessage(next)
+        next
+    }
     suspend fun branch(source: String, messageId: String, inclusive: Boolean): String = db.withTransaction {
         val sourceChat = requireNotNull(dao.chat(source))
         val history = dao.history(source)
@@ -58,18 +69,20 @@ class ChatRepository @Inject constructor(val db: AstraDatabase) {
     suspend fun exportMarkdown(): String = db.withTransaction {
         val messages = dao.allMessages().groupBy { it.chatId }
         dao.allChats().joinToString("\n\n---\n\n") { chat ->
-            "# ${chat.title.replace('\n', ' ')}\n\n" + messages[chat.id].orEmpty().joinToString("\n\n") { "## ${if (it.role == "user") "Вы" else "Astra"}\n\n${it.text}" }
+            "# ${chat.title.replace('\n', ' ')}\n\n" + messages[chat.id].orEmpty().joinToString("\n\n") {
+                "## ${when (it.role) { "user" -> "Вы"; "tool" -> "Инструмент" + if (it.toolName.isNotBlank()) " · ${it.toolName}" else ""; else -> "Astra" }}\n\n${it.text}"
+            }
         }
     }
     suspend fun importJson(text: String): Int {
         require(text.length <= 20 * 1024 * 1024)
         val backup = json.decodeFromString<Backup>(text)
-        require(backup.version == 1 && backup.chats.size <= 10000 && backup.messages.size <= 100000)
+        require(backup.version in 1..2 && backup.chats.size <= 10000 && backup.messages.size <= 100000)
         require(backup.chats.map { it.id }.distinct().size == backup.chats.size)
         require(backup.messages.map { it.id }.distinct().size == backup.messages.size)
         val chatMap = backup.chats.associate { it.id to newId() }
         val msgMap = backup.messages.associate { it.id to newId() }
-        require(backup.messages.all { it.chatId in chatMap && it.role in setOf("user", "assistant") && it.position >= 0 })
+        require(backup.messages.all { it.chatId in chatMap && it.role in setOf("user", "assistant", "tool") && it.position >= 0 })
         db.withTransaction {
             backup.chats.forEach { dao.saveChat(it.copy(id = chatMap.getValue(it.id))) }
             backup.messages.forEach { dao.saveMessage(it.copy(id = msgMap.getValue(it.id), chatId = chatMap.getValue(it.chatId), state = if (it.state == "generating") "interrupted" else it.state)) }

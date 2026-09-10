@@ -27,5 +27,6 @@ class McpRepository @Inject constructor(db: AstraDatabase, private val vault: Se
     suspend fun discover(server: McpServer): McpDiscovery = mcp.discover(server, credentials(server))
     suspend fun readResource(server: McpServer, uri: String): String = mcp.readResource(server, credentials(server), uri)
     suspend fun getPrompt(server: McpServer, name: String, arguments: Map<String, String>): List<McpPromptMessage> = mcp.getPrompt(server, credentials(server), name, arguments)
+    suspend fun openSession(server: McpServer): McpToolSession = mcp.openSession(server, credentials(server))
     suspend fun delete(server: McpServer) { withContext(Dispatchers.IO) { vault.delete(mcpVaultId(server.id)) }; dao.deleteMcpServer(server.id) }
 }
