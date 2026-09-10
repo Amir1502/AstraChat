@@ -11,6 +11,7 @@ object ProviderCodec {
         val extra = json.parseToJsonElement(g.extraJson) as? JsonObject ?: throw SafeFailure(FailureKind.INVALID)
         val blocked = setOf("model", "messages", "input", "contents", "system", "systemInstruction", "instructions", "stream", "stream_options", "generationConfig", "tools", "api_key", "authorization")
         require(extra.keys.none { it in blocked })
+        require(request.tools.isEmpty() || p.protocol == Protocol.CHAT_COMPLETIONS)
         val system = g.system
         val supported: (String) -> Boolean = { it in m.parameters }
         val parameters = buildJsonObject {
@@ -27,7 +28,37 @@ object ProviderCodec {
                     if (stream && p.sendStreamUsage) putJsonObject("stream_options") { put("include_usage", true) }
                     putJsonArray("messages") {
                         if (system.isNotBlank()) add(buildJsonObject { put("role", "system"); put("content", system) })
-                        turns.forEach { t -> add(buildJsonObject { put("role", t.role); put("content", t.text) }) }
+                        turns.forEach { t ->
+                            add(buildJsonObject {
+                                put("role", t.role)
+                                if (t.role == "tool") {
+                                    put("tool_call_id", t.toolCallId)
+                                    put("content", t.text)
+                                } else {
+                                    if (t.text.isNotBlank() || t.toolCalls.isEmpty()) put("content", t.text)
+                                    if (t.toolCalls.isNotEmpty()) putJsonArray("tool_calls") {
+                                        t.toolCalls.forEach { c ->
+                                            add(buildJsonObject {
+                                                put("id", c.id); put("type", "function")
+                                                putJsonObject("function") { put("name", c.name); put("arguments", c.arguments) }
+                                            })
+                                        }
+                                    }
+                                }
+                            })
+                        }
+                    }
+                    if (request.tools.isNotEmpty()) putJsonArray("tools") {
+                        request.tools.forEach { t ->
+                            add(buildJsonObject {
+                                put("type", "function")
+                                putJsonObject("function") {
+                                    put("name", t.name)
+                                    if (t.description.isNotBlank()) put("description", t.description)
+                                    if (t.inputSchema.isNotEmpty()) put("parameters", t.inputSchema)
+                                }
+                            })
+                        }
                     }
                     parameters.forEach { (k, v) -> put(k, v) }
                     put(if ("max_completion_tokens" in m.parameters) "max_completion_tokens" else "max_tokens", g.maxOutput)
@@ -76,9 +107,17 @@ object ProviderCodec {
         return when (protocol) {
             Protocol.CHAT_COMPLETIONS -> {
                 val choice = o.arr("choices").firstOrNull() as? JsonObject
-                val text = choice?.obj(if (streaming) "delta" else "message")?.str("content").orEmpty()
+                val source = choice?.obj(if (streaming) "delta" else "message")
+                val raw = source?.arr("tool_calls").orEmpty().filterIsInstance<JsonObject>()
                 val u = o.obj("usage")
-                Chunk(text, Usage(u.num("prompt_tokens"), u.num("completion_tokens"), u.obj("completion_tokens_details").num("reasoning_tokens"), u.obj("prompt_tokens_details").num("cached_tokens"), u.num("total_tokens")), !streaming)
+                Chunk(source?.str("content").orEmpty(),
+                    Usage(u.num("prompt_tokens"), u.num("completion_tokens"), u.obj("completion_tokens_details").num("reasoning_tokens"), u.obj("prompt_tokens_details").num("cached_tokens"), u.num("total_tokens")),
+                    !streaming,
+                    if (streaming) raw.map { c -> ToolCallFragment(c.num("index")?.toInt() ?: 0, c.str("id"), c.obj("function").str("name"), c.obj("function").str("arguments")) } else emptyList(),
+                    if (streaming) emptyList() else raw.mapNotNull { c ->
+                        val id = c.str("id"); val fn = c.obj("function")
+                        if (id.isNotBlank() && fn.str("name").isNotBlank()) ToolCall(id, fn.str("name"), fn.str("arguments")) else null
+                    })
             }
             Protocol.RESPONSES -> {
                 val type = o.str("type").ifBlank { event }

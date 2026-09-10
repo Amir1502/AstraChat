@@ -63,4 +63,49 @@ class ProviderCodecTest {
         assertEquals("hello", c.text); assertTrue(c.terminal); assertEquals(4L, c.usage.input)
     }
     @Test fun sseAndMetricsProductionAssertions() { OfflineChecks.main(emptyArray()) }
+
+    @Test fun chatCompletionsCarriesToolsAndToolTurns() {
+        val tool = McpTool("get_weather", "Weather", "Weather by city", buildJsonObject { put("type", "object") })
+        val r = request(Protocol.CHAT_COMPLETIONS, setOf("temperature")).copy(
+            turns = listOf(
+                Turn("user", "Погода?"),
+                Turn("assistant", "", listOf(ToolCall("call_1", "get_weather", """{"city":"M"}"""))),
+                Turn("tool", "Sunny", toolCallId = "call_1"),
+            ),
+            tools = listOf(tool),
+        )
+        val o = ProviderCodec.body(r, true)
+        val exposed = o.arr("tools")[0].jsonObject
+        assertEquals("function", exposed.str("type"))
+        assertEquals("get_weather", exposed.obj("function").str("name"))
+        assertEquals("Weather by city", exposed.obj("function").str("description"))
+        assertEquals("object", exposed.obj("function").obj("parameters").str("type"))
+        val messages = o.arr("messages").filterIsInstance<JsonObject>()
+        val assistant = messages[2]
+        assertFalse(assistant.containsKey("content"))
+        val call = assistant.arr("tool_calls")[0].jsonObject
+        assertEquals("call_1", call.str("id")); assertEquals("function", call.str("type"))
+        assertEquals("get_weather", call.obj("function").str("name"))
+        assertEquals("""{"city":"M"}""", call.obj("function").str("arguments"))
+        val toolMessage = messages[3]
+        assertEquals("tool", toolMessage.str("role"))
+        assertEquals("call_1", toolMessage.str("tool_call_id"))
+        assertEquals("Sunny", toolMessage.str("content"))
+    }
+
+    @Test(expected = IllegalArgumentException::class) fun toolsRejectedOutsideChatCompletions() {
+        ProviderCodec.body(request(Protocol.ANTHROPIC).copy(tools = listOf(McpTool("t"))), false)
+    }
+
+    @Test fun streamingToolCallFragmentsDecoded() {
+        val c = ProviderCodec.decode(Protocol.CHAT_COMPLETIONS, "", """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":""}},{"function":{"arguments":"{\"x\""}}]}}]}""")
+        assertEquals(listOf(ToolCallFragment(0, "c1", "f", ""), ToolCallFragment(0, "", "", "{\"x\"")), c.toolFragments)
+        assertTrue(c.toolCalls.isEmpty()); assertFalse(c.terminal); assertEquals("", c.text)
+    }
+
+    @Test fun nonStreamingToolCallsDecoded() {
+        val c = ProviderCodec.decode(Protocol.CHAT_COMPLETIONS, "", """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}""", false)
+        assertEquals(listOf(ToolCall("c1", "f", "{}")), c.toolCalls)
+        assertTrue(c.terminal); assertTrue(c.toolFragments.isEmpty())
+    }
 }
