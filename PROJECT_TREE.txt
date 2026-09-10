@@ -11,7 +11,9 @@ README.md
 SECURITY.md
 app/build.gradle.kts
 app/proguard-rules.pro
+app/schemas/com.folzi.astrachat.data.AstraDatabase/2.json
 app/schemas/com.folzi.astrachat.data.AstraDatabase/3.json
+app/schemas/com.folzi.astrachat.data.AstraDatabase/4.json
 app/src/androidTest/java/com/folzi/astrachat/ComposeSmokeTest.kt
 app/src/androidTest/java/com/folzi/astrachat/StorageTest.kt
 app/src/main/AndroidManifest.xml
@@ -56,6 +58,8 @@ docs/PROVIDERS.md
 docs/VERIFICATION.md
 docs/screenshots/README.md
 docs/superpowers/plans/2026-09-09-mcp-stage1.md
+docs/superpowers/plans/2026-09-09-mcp-stage2.md
+docs/superpowers/specs/2026-09-09-mcp-stage2-design.md
 examples/provider.json
 gradle/libs.versions.toml
 gradle/wrapper/gradle-wrapper.properties
