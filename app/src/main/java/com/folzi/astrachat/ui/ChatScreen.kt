@@ -1,5 +1,7 @@
 package com.folzi.astrachat.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.shape.CircleShape
@@ -38,14 +40,16 @@ fun ChatScreen(vm: AstraViewModel, menu: (() -> Unit)?, parameters: () -> Unit, 
     val live by vm.live.collectAsStateWithLifecycle()
     val usage by vm.usage.collectAsStateWithLifecycle()
     val mcpServers by vm.mcpServers.collectAsStateWithLifecycle()
+    val attachments by vm.pendingAttachments.collectAsStateWithLifecycle()
+    val attachPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::attachFile) }
     var picker by remember { mutableStateOf(false) }
     var mcpPicker by remember { mutableStateOf(false) }
     val current = chats.firstOrNull { it.id == selected }
     val pid = current?.providerId?.ifBlank { settings.providerId } ?: settings.providerId
     val model = current?.modelId?.ifBlank { settings.modelId } ?: settings.modelId
     val mcpIds = remember(current?.mcpServerIds) { current?.mcpServerIds.orEmpty().split(',').filter { it.isNotBlank() } }
-    val contextEstimate = remember(settings.generation.system, messages, draft) {
-        TokenMath.estimate(settings.generation.system + messages.joinToString { it.text } + draft)
+    val contextEstimate = remember(settings.generation.system, messages, draft, attachments) {
+        TokenMath.estimate(settings.generation.system + messages.joinToString { it.text } + draft) + attachments.sumOf(::attachmentTokens)
     }
     val list = rememberLazyListState()
     var follow by remember(selected) { mutableStateOf(true) }
@@ -93,6 +97,22 @@ fun ChatScreen(vm: AstraViewModel, menu: (() -> Unit)?, parameters: () -> Unit, 
                         Column(Modifier.fillMaxWidth().widthIn(max = transcriptWidth), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (live?.chatId == selected) live?.let { LivePanel(it, usage.filter { u -> u.chatId == selected }.sumOf { u -> u.total }, usage.sumOf { u -> u.total }) }
                             Panel(padding = 8.dp, spacing = 2.dp) {
+                                if (attachments.isNotEmpty()) {
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        attachments.forEach { a ->
+                                            Surface(
+                                                shape = MaterialTheme.shapes.small,
+                                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                            ) {
+                                                Row(Modifier.padding(start = 8.dp, end = 2.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    Text("📎 ${a.name} · ${formatSize(a.sizeBytes)}", style = MaterialTheme.typography.labelSmall, maxLines = 1, modifier = Modifier.widthIn(max = 220.dp))
+                                                    Action("✕") { vm.removeAttachment(a.id) }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 OutlinedTextField(
                                     draft,
                                     vm::updateDraft,
@@ -112,6 +132,7 @@ fun ChatScreen(vm: AstraViewModel, menu: (() -> Unit)?, parameters: () -> Unit, 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Action("Модель") { picker = true }
                                     Action(if (mcpIds.isEmpty()) "MCP" else "MCP · ${mcpIds.size}") { mcpPicker = true }
+                                    Action("Файл") { attachPicker.launch(arrayOf("*/*")) }
                                     SectionLabel("≈ ${contextEstimate} ток. · оценка")
                                     Spacer(Modifier.weight(1f))
                                     if (live?.active == true) {
@@ -125,7 +146,7 @@ fun ChatScreen(vm: AstraViewModel, menu: (() -> Unit)?, parameters: () -> Unit, 
                                     } else {
                                         Button(
                                             onClick = vm::send,
-                                            enabled = draft.isNotBlank() && model.isNotBlank(),
+                                            enabled = (draft.isNotBlank() || attachments.isNotEmpty()) && model.isNotBlank(),
                                             shape = MaterialTheme.shapes.medium,
                                             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
                                             modifier = Modifier.heightIn(min = 44.dp),
@@ -254,6 +275,19 @@ private fun TranscriptRow(row: MessageRow, vm: AstraViewModel, scale: Float, ani
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        if (row.attachments.isNotBlank()) {
+            val files = parseAttachments(row.attachments)
+            if (files.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                files.forEach { a ->
+                    Text(
+                        "📎 ${a.name} · ${formatSize(a.sizeBytes)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
         if (row.text.isNotEmpty()) {
             Markdown(row.text, scale)
@@ -386,4 +420,11 @@ fun HistoryPanel(vm: AstraViewModel, onSelected: () -> Unit, navigate: (String) 
         )
     }
     deletion?.let { chat -> Confirm("Удалить чат?", "Все сообщения этого чата будут удалены. Общая статистика сохранится.", { deletion = null }) { vm.deleteChat(chat.id) } }
+}
+
+/** Compact Russian size label for attachment chips; integer rounding avoids locale formatting issues. */
+fun formatSize(bytes: Long): String = when {
+    bytes >= 1024 * 1024 -> "${(bytes + 512 * 1024) / (1024 * 1024)} МБ"
+    bytes >= 1024 -> "${(bytes + 512) / 1024} КБ"
+    else -> "$bytes Б"
 }
