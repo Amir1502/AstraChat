@@ -1,5 +1,6 @@
 package com.folzi.astrachat.core
 
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -107,5 +108,80 @@ class ProviderCodecTest {
         val c = ProviderCodec.decode(Protocol.CHAT_COMPLETIONS, "", """{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}""", false)
         assertEquals(listOf(ToolCall("c1", "f", "{}")), c.toolCalls)
         assertTrue(c.terminal); assertTrue(c.toolFragments.isEmpty())
+    }
+
+    private val png = Attachment("img-1", "photo.png", "image/png", 3, base64 = "AAAA")
+    private val txt = Attachment("txt-1", "notes.txt", "text/plain", 5, text = "hello")
+
+    @Test fun attachmentsSerializedPerProtocol() {
+        val turns = listOf(Turn("user", "Смотри", attachments = listOf(png, txt)))
+        val cc = ProviderCodec.body(request(Protocol.CHAT_COMPLETIONS).copy(turns = turns), false)
+            .arr("messages")[1].jsonObject.arr("content")
+        assertEquals("text", cc[0].jsonObject.str("type"))
+        assertEquals("Смотри", cc[0].jsonObject.str("text"))
+        assertEquals("image_url", cc[1].jsonObject.str("type"))
+        assertEquals("data:image/png;base64,AAAA", cc[1].jsonObject.obj("image_url").str("url"))
+        assertEquals(attachmentBlock(txt), cc[2].jsonObject.str("text"))
+
+        val responses = ProviderCodec.body(request(Protocol.RESPONSES).copy(turns = turns), false)
+            .arr("input")[0].jsonObject.arr("content")
+        assertEquals("input_text", responses[0].jsonObject.str("type"))
+        assertEquals("Смотри", responses[0].jsonObject.str("text"))
+        assertEquals("input_image", responses[1].jsonObject.str("type"))
+        assertEquals("data:image/png;base64,AAAA", responses[1].jsonObject.str("image_url"))
+        assertEquals(attachmentBlock(txt), responses[2].jsonObject.str("text"))
+
+        val anthropic = ProviderCodec.body(request(Protocol.ANTHROPIC).copy(turns = turns), false)
+            .arr("messages")[0].jsonObject.arr("content")
+        assertEquals("text", anthropic[0].jsonObject.str("type"))
+        assertEquals("image", anthropic[1].jsonObject.str("type"))
+        val source = anthropic[1].jsonObject.obj("source")
+        assertEquals("base64", source.str("type")); assertEquals("image/png", source.str("media_type")); assertEquals("AAAA", source.str("data"))
+
+        val gemini = ProviderCodec.body(request(Protocol.GEMINI).copy(turns = turns), false)
+            .arr("contents")[0].jsonObject.arr("parts")
+        assertEquals("Смотри", gemini[0].jsonObject.str("text"))
+        assertEquals("image/png", gemini[1].jsonObject.obj("inlineData").str("mimeType"))
+        assertEquals("AAAA", gemini[1].jsonObject.obj("inlineData").str("data"))
+        assertEquals(attachmentBlock(txt), gemini[2].jsonObject.str("text"))
+    }
+
+    @Test fun attachmentlessTurnsKeepPlainStringContent() {
+        val o = ProviderCodec.body(request(Protocol.CHAT_COMPLETIONS), false)
+        assertEquals("Hello", o.arr("messages")[1].jsonObject.str("content"))
+        val a = ProviderCodec.body(request(Protocol.ANTHROPIC), false)
+        assertEquals("Hello", a.arr("messages")[0].jsonObject.str("content"))
+    }
+
+    @Test fun missingImageFallsBackToMarker() {
+        val broken = png.copy(base64 = "")
+        val o = ProviderCodec.body(request(Protocol.CHAT_COMPLETIONS).copy(turns = listOf(Turn("user", "", attachments = listOf(broken)))), false)
+        val content = o.arr("messages")[1].jsonObject.arr("content")
+        assertEquals(1, content.size)
+        assertEquals(attachmentImageFallback(broken), content[0].jsonObject.str("text"))
+    }
+
+    @Test(expected = IllegalArgumentException::class) fun attachmentsRejectedOnToolTurns() {
+        ProviderCodec.body(request(Protocol.CHAT_COMPLETIONS).copy(turns = listOf(Turn("tool", "r", toolCallId = "c1", attachments = listOf(txt)))), false)
+    }
+
+    @Test fun attachmentClassificationAndParsing() {
+        assertEquals(AttachmentKind.IMAGE, classifyAttachment(resolveMimeType("application/octet-stream", "a.PNG")))
+        assertEquals(AttachmentKind.TEXT, classifyAttachment(resolveMimeType("", "script.kt")))
+        assertEquals(AttachmentKind.TEXT, classifyAttachment(resolveMimeType("text/markdown", "readme.md")))
+        assertEquals(AttachmentKind.UNSUPPORTED, classifyAttachment(resolveMimeType("application/pdf", "doc.pdf")))
+        assertEquals(AttachmentKind.UNSUPPORTED, classifyAttachment(resolveMimeType("image/svg+xml", "v.svg")))
+        assertEquals("photo.png", attachmentName("/storage/emulated/0/Download/photo.png"))
+        assertTrue(parseAttachments("не json").isEmpty())
+        assertEquals(listOf(txt), parseAttachments(json.encodeToString(listOf(txt))))
+        assertTrue(attachmentTokens(png) > 0)
+        assertTrue(attachmentTokens(txt) > TokenMath.estimate(txt.text))
+    }
+
+    @Test fun usageEstimateCountsAttachments() {
+        val bare = usageTotals(Usage(), listOf(Turn("user", "hello")), "hello", true)
+        val withFiles = usageTotals(Usage(), listOf(Turn("user", "hello", attachments = listOf(png, txt))), "hello", true)
+        assertTrue(withFiles.input > bare.input)
+        assertTrue(withFiles.estimated)
     }
 }

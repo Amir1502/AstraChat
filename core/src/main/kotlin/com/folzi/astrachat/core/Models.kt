@@ -34,7 +34,7 @@ data class Generation(
 data class ToolCall(val id: String, val name: String, val arguments: String)
 data class ToolCallFragment(val index: Int, val id: String = "", val name: String = "", val argumentsDelta: String = "")
 @Serializable
-data class Turn(val role: String, val text: String, val toolCalls: List<ToolCall> = emptyList(), val toolCallId: String = "")
+data class Turn(val role: String, val text: String, val toolCalls: List<ToolCall> = emptyList(), val toolCallId: String = "", val attachments: List<Attachment> = emptyList())
 data class ChatRequest(val provider: Provider, val model: Model, val credentials: Credentials, val turns: List<Turn>, val generation: Generation, val tools: List<McpTool> = emptyList())
 data class Usage(val input: Long? = null, val output: Long? = null, val reasoning: Long? = null, val cached: Long? = null, val total: Long? = null) {
     fun merge(next: Usage) = Usage(next.input ?: input, next.output ?: output, next.reasoning ?: reasoning, next.cached ?: cached, next.total ?: total)
@@ -43,7 +43,7 @@ data class Chunk(val text: String = "", val usage: Usage = Usage(), val terminal
 data class Totals(val input: Long, val output: Long, val total: Long, val reasoning: Long?, val cached: Long?, val estimated: Boolean)
 
 fun usageTotals(usage: Usage, turns: List<Turn>, text: String, complete: Boolean): Totals {
-    val input = usage.input ?: (turns.sumOf { TokenMath.estimate(it.text) + 4 } + 2)
+    val input = usage.input ?: (turns.sumOf { TokenMath.estimate(it.text) + 4 + it.attachments.sumOf(::attachmentTokens) } + 2)
     val output = if (complete) usage.output ?: TokenMath.estimate(text) else TokenMath.estimate(text)
     return Totals(input, output, if (complete) usage.total ?: (input + output) else input + output,
         usage.reasoning, usage.cached, !complete || usage.input == null || usage.output == null)

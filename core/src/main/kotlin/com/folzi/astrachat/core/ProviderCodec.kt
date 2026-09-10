@@ -12,6 +12,7 @@ object ProviderCodec {
         val blocked = setOf("model", "messages", "input", "contents", "system", "systemInstruction", "instructions", "stream", "stream_options", "generationConfig", "tools", "api_key", "authorization")
         require(extra.keys.none { it in blocked })
         require(request.tools.isEmpty() || p.protocol == Protocol.CHAT_COMPLETIONS)
+        require(turns.none { it.role == "tool" && it.attachments.isNotEmpty() })
         val system = g.system
         val supported: (String) -> Boolean = { it in m.parameters }
         val parameters = buildJsonObject {
@@ -35,7 +36,19 @@ object ProviderCodec {
                                     put("tool_call_id", t.toolCallId)
                                     put("content", t.text)
                                 } else {
-                                    if (t.text.isNotBlank() || t.toolCalls.isEmpty()) put("content", t.text)
+                                    when {
+                                        t.attachments.isNotEmpty() -> putJsonArray("content") {
+                                            if (t.text.isNotBlank()) add(buildJsonObject { put("type", "text"); put("text", t.text) })
+                                            t.attachments.forEach { a ->
+                                                if (a.isImage && a.base64.isNotEmpty()) {
+                                                    add(buildJsonObject { put("type", "image_url"); putJsonObject("image_url") { put("url", attachmentDataUri(a)) } })
+                                                } else {
+                                                    add(buildJsonObject { put("type", "text"); put("text", if (a.isImage) attachmentImageFallback(a) else attachmentBlock(a)) })
+                                                }
+                                            }
+                                        }
+                                        t.text.isNotBlank() || t.toolCalls.isEmpty() -> put("content", t.text)
+                                    }
                                     if (t.toolCalls.isNotEmpty()) putJsonArray("tool_calls") {
                                         t.toolCalls.forEach { c ->
                                             add(buildJsonObject {
@@ -69,7 +82,22 @@ object ProviderCodec {
                     put("model", m.id); put("stream", stream); put("store", false)
                     put("instructions", system); put("max_output_tokens", g.maxOutput)
                     putJsonArray("input") {
-                        turns.forEach { t -> add(buildJsonObject { put("role", t.role); put("content", t.text) }) }
+                        turns.forEach { t ->
+                            add(buildJsonObject {
+                                put("role", t.role)
+                                if (t.attachments.isEmpty()) put("content", t.text)
+                                else putJsonArray("content") {
+                                    if (t.text.isNotBlank()) add(buildJsonObject { put("type", "input_text"); put("text", t.text) })
+                                    t.attachments.forEach { a ->
+                                        if (a.isImage && a.base64.isNotEmpty()) {
+                                            add(buildJsonObject { put("type", "input_image"); put("image_url", attachmentDataUri(a)) })
+                                        } else {
+                                            add(buildJsonObject { put("type", "input_text"); put("text", if (a.isImage) attachmentImageFallback(a) else attachmentBlock(a)) })
+                                        }
+                                    }
+                                }
+                            })
+                        }
                     }
                     parameters.filterKeys { it != "stop" }.forEach { (k, v) -> put(k, v) }
                     if (supported("reasoning_effort") && g.reasoning.isNotBlank()) putJsonObject("reasoning") { put("effort", g.reasoning) }
@@ -77,7 +105,27 @@ object ProviderCodec {
                 }
                 Protocol.ANTHROPIC -> {
                     put("model", m.id); put("stream", stream); put("system", system); put("max_tokens", g.maxOutput)
-                    putJsonArray("messages") { turns.forEach { t -> add(buildJsonObject { put("role", t.role); put("content", t.text) }) } }
+                    putJsonArray("messages") {
+                        turns.forEach { t ->
+                            add(buildJsonObject {
+                                put("role", t.role)
+                                if (t.attachments.isEmpty()) put("content", t.text)
+                                else putJsonArray("content") {
+                                    if (t.text.isNotBlank()) add(buildJsonObject { put("type", "text"); put("text", t.text) })
+                                    t.attachments.forEach { a ->
+                                        if (a.isImage && a.base64.isNotEmpty()) {
+                                            add(buildJsonObject {
+                                                put("type", "image")
+                                                putJsonObject("source") { put("type", "base64"); put("media_type", a.mimeType); put("data", a.base64) }
+                                            })
+                                        } else {
+                                            add(buildJsonObject { put("type", "text"); put("text", if (a.isImage) attachmentImageFallback(a) else attachmentBlock(a)) })
+                                        }
+                                    }
+                                }
+                            })
+                        }
+                    }
                     // Anthropic models may reject simultaneous temperature and top_p.
                     parameters.filterKeys { it != "top_p" || g.temperature == null }.forEach { (k, v) -> put(k, v) }
                     if (supported("reasoning_effort") && g.reasoning.isNotBlank()) putJsonObject("output_config") { put("effort", g.reasoning) }
@@ -88,7 +136,16 @@ object ProviderCodec {
                     putJsonArray("contents") {
                         turns.forEach { t -> add(buildJsonObject {
                             put("role", if (t.role == "assistant") "model" else "user")
-                            putJsonArray("parts") { add(buildJsonObject { put("text", t.text) }) }
+                            putJsonArray("parts") {
+                                if (t.text.isNotBlank() || t.attachments.isEmpty()) add(buildJsonObject { put("text", t.text) })
+                                t.attachments.forEach { a ->
+                                    if (a.isImage && a.base64.isNotEmpty()) {
+                                        add(buildJsonObject { putJsonObject("inlineData") { put("mimeType", a.mimeType); put("data", a.base64) } })
+                                    } else {
+                                        add(buildJsonObject { put("text", if (a.isImage) attachmentImageFallback(a) else attachmentBlock(a)) })
+                                    }
+                                }
+                            }
                         }) }
                     }
                     putJsonObject("generationConfig") {
