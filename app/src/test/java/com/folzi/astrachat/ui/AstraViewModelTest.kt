@@ -1,5 +1,6 @@
 package com.folzi.astrachat.ui
 
+import android.annotation.SuppressLint
 import com.folzi.astrachat.core.*
 import com.folzi.astrachat.data.*
 import kotlinx.coroutines.*
@@ -112,18 +113,22 @@ class AstraViewModelTest {
     }
     // Mockito matchers return null, which Kotlin non-null parameters reject at the call site.
     // These helpers register the matcher and return a non-null dummy instead.
+    @SuppressLint("CheckResult") // matcher registration: the returned dummy is intentionally discarded
     private fun anyMessageRow(): MessageRow {
         any(MessageRow::class.java)
         return MessageRow("", "", 0, "", "")
     }
+    @SuppressLint("CheckResult")
     private fun anyUsageRow(): UsageRow {
         any(UsageRow::class.java)
         return UsageRow("", "", "", "", 0, 0, 0, 0, null, null, false, null, 0, 0.0, null)
     }
+    @SuppressLint("CheckResult")
     private fun anyServer(): McpServer {
         any(McpServer::class.java)
         return McpServer("", "", "https://example.com")
     }
+    @SuppressLint("CheckResult")
     private fun anyToolResults(): List<Pair<ToolCall, String>> {
         anyList<Pair<ToolCall, String>>()
         return emptyList()
