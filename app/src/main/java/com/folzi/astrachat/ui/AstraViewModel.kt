@@ -9,6 +9,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
+
+private const val MAX_TOOL_ROUNDS = 8
+private const val TOOL_RESULT_CHARS = 32_000
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -100,18 +105,22 @@ class AstraViewModel @Inject constructor(
             var request: ChatRequest? = null
             var started = 0L; var first: Long? = null; var official = Usage(); var content = ""
             var complete = false; var state = "error"; var category = ""; var timestamp = 0L
+            var pendingCalls = emptyList<ToolCall>()
+            var ticker: Job? = null
+            val sessions = mutableListOf<McpToolSession>()
             suspend fun persist() {
-                val row = assistant ?: return; val req = request ?: return
+                val row = assistant ?: return
+                val req = request ?: return
                 val now = System.nanoTime()
                 val totals = usageTotals(official, listOf(Turn("system", req.generation.system)) + req.turns, content, complete)
                 val stats = UsageRow(row.id, row.chatId, req.provider.id, req.model.id, timestamp,
                     totals.input, totals.output, totals.total, totals.reasoning, totals.cached, totals.estimated,
                     TokenMath.ttft(started, first), (now - started) / 1_000_000,
                     TokenMath.speed(totals.output, first, now), cost(req.model, totals), state)
-                repository.checkpoint(row.copy(text = content, state = state, errorCategory = category), stats)
+                repository.checkpoint(row.copy(text = content, state = state, errorCategory = category,
+                    toolCalls = if (pendingCalls.isEmpty()) "" else json.encodeToString(pendingCalls)), stats)
                 live.value = LiveRequest(row.chatId, totals, started, first, now, state == "generating")
             }
-            var ticker: Job? = null
             try {
                 val s = settings.value
                 val selectedChat = selected.value?.let { repository.dao.chat(it) }
@@ -121,26 +130,61 @@ class AstraViewModel @Inject constructor(
                 val m = models.value.firstOrNull { it.providerId == providerId && it.id == modelId } ?: throw SafeFailure(FailureKind.MODEL)
                 TransportPolicy.validate(p.baseUrl, p.allowLocalHttp)
                 val id = selected.value ?: repository.createChat(p.id, m.id).also { selected.value = it }
-                val history = repository.dao.history(id).filter { it.text.isNotBlank() && it.state == "complete" }.map { Turn(it.role, it.text) }
-                val req = ChatRequest(p, m, withContext(Dispatchers.IO) { vault.read(p.id) }, history + Turn("user", input), s.generation)
-                request = req
-                val contextEstimate = usageTotals(Usage(), listOf(Turn("system", s.generation.system)) + req.turns, "", false).input
-                if (contextEstimate + s.generation.maxOutput > m.contextWindow) throw SafeFailure(FailureKind.CONTEXT)
-                ProviderCodec.body(req, p.streaming)
-                assistant = repository.appendExchange(id, input, p.id, m.id)
-                draft.value = ""; started = System.nanoTime(); timestamp = System.currentTimeMillis(); state = "generating"
-                persist()
-                ticker = launch { while (isActive) { delay(250); live.update { it?.copy(now = System.nanoTime()) } } }
-                var lastFlush = started
-                gateway.generate(req).collect { chunk ->
-                    if (chunk.text.isNotEmpty() && first == null) first = System.nanoTime()
-                    content += chunk.text
-                    require(content.length <= 4 * 1024 * 1024)
-                    official = official.merge(chunk.usage); complete = complete || chunk.terminal
-                    if (System.nanoTime() - lastFlush > 150_000_000) { persist(); lastFlush = System.nanoTime() }
+                val credentials = withContext(Dispatchers.IO) { vault.read(p.id) }
+                val toolRounds = p.protocol == Protocol.CHAT_COMPLETIONS
+                var currentTurns = historyTurns(repository.dao.history(id), toolRounds) + Turn("user", input)
+                val route = LinkedHashMap<String, Pair<McpToolSession, McpTool>>()
+                val tools = mutableListOf<McpTool>()
+                if (toolRounds) {
+                    val enabledIds = repository.dao.chat(id)?.mcpServerIds.orEmpty().split(',').filter { it.isNotBlank() }.toSet()
+                    val sessionById = LinkedHashMap<String, McpToolSession>()
+                    val toolsByServer = LinkedHashMap<String, List<McpTool>>()
+                    mcpServers.value.filter { it.id in enabledIds }.forEach { srv ->
+                        val session = mcp.openSession(srv)
+                        sessions += session
+                        sessionById[srv.id] = session
+                        toolsByServer[srv.id] = session.tools()
+                    }
+                    exposeTools(toolsByServer).forEach { exposed ->
+                        val session = requireNotNull(sessionById[exposed.serverId])
+                        route[exposed.name] = session to exposed.tool
+                        tools += exposed.tool.copy(name = exposed.name)
+                    }
                 }
-                if (!complete) throw SafeFailure(FailureKind.TRUNCATED)
-                state = "complete"
+                assistant = repository.appendExchange(id, input, p.id, m.id)
+                draft.value = ""
+                var rounds = 0
+                while (true) {
+                    val contextEstimate = usageTotals(Usage(), listOf(Turn("system", s.generation.system)) + currentTurns, "", false).input
+                    if (contextEstimate + s.generation.maxOutput > m.contextWindow) throw SafeFailure(FailureKind.CONTEXT)
+                    val req = ChatRequest(p, m, credentials, currentTurns, s.generation, tools)
+                    request = req
+                    ProviderCodec.body(req, p.streaming)
+                    content = ""; official = Usage(); first = null; complete = false; pendingCalls = emptyList()
+                    started = System.nanoTime(); timestamp = System.currentTimeMillis(); state = "generating"
+                    persist()
+                    if (ticker == null) ticker = launch { while (isActive) { delay(250); live.update { it?.copy(now = System.nanoTime()) } } }
+                    var lastFlush = started
+                    var calls = emptyList<ToolCall>()
+                    gateway.generate(req).collect { chunk ->
+                        if (chunk.text.isNotEmpty() && first == null) first = System.nanoTime()
+                        content += chunk.text
+                        require(content.length <= 4 * 1024 * 1024)
+                        official = official.merge(chunk.usage); complete = complete || chunk.terminal
+                        if (chunk.terminal) calls = chunk.toolCalls
+                        if (System.nanoTime() - lastFlush > 150_000_000) { persist(); lastFlush = System.nanoTime() }
+                    }
+                    if (!complete) throw SafeFailure(FailureKind.TRUNCATED)
+                    if (calls.isEmpty()) { state = "complete"; break }
+                    if (rounds >= MAX_TOOL_ROUNDS) throw SafeFailure(FailureKind.TOOL_LOOP)
+                    rounds++
+                    pendingCalls = calls; state = "complete"; persist()
+                    val row = requireNotNull(assistant)
+                    val results = calls.map { call -> executeToolCall(route, call) }
+                    assistant = repository.appendToolResults(id, row.position, calls.zip(results))
+                    currentTurns = currentTurns + Turn("assistant", content, calls) +
+                        calls.mapIndexed { i, call -> Turn("tool", results[i], toolCallId = call.id) }
+                }
             } catch (cancel: CancellationException) {
                 state = "stopped"; complete = false
             } catch (error: Exception) {
@@ -148,9 +192,48 @@ class AstraViewModel @Inject constructor(
             } finally {
                 ticker?.cancel()
                 withContext(NonCancellable) { try { persist() } catch (error: Exception) { report(error) } }
+                sessions.forEach { runCatching { it.close() } }
                 live.update { it?.copy(active = false) }; guard.set(false)
             }
         }
+    }
+    fun setChatMcpServers(chatId: String, serverIds: Set<String>) = action {
+        repository.dao.chat(chatId)?.let { repository.dao.saveChat(it.copy(mcpServerIds = serverIds.sorted().joinToString(","))) }
+    }
+    /** Rebuilds provider turns from persisted rows. Tool structures only survive on CHAT_COMPLETIONS chats;
+     *  unpaired tool rows and orphan tool_calls are dropped so the wire request stays valid. */
+    private fun historyTurns(rows: List<MessageRow>, toolRounds: Boolean): List<Turn> {
+        val complete = rows.filter { it.state == "complete" }
+        if (!toolRounds) return complete.filter { it.role != "tool" && it.text.isNotBlank() }.map { Turn(it.role, it.text) }
+        val resultIds = complete.filter { it.role == "tool" }.map { it.toolCallId }.toSet()
+        val callsByRow = complete.associate { row ->
+            row.id to if (row.role == "assistant" && row.toolCalls.isNotBlank()) parseToolCalls(row.toolCalls).filter { it.id in resultIds } else emptyList()
+        }
+        val validIds = callsByRow.values.flatten().map { it.id }.toSet()
+        return complete.mapNotNull { row ->
+            when {
+                row.role == "tool" -> if (row.toolCallId in validIds) Turn("tool", row.text, toolCallId = row.toolCallId) else null
+                else -> {
+                    val calls = callsByRow.getValue(row.id)
+                    if (row.text.isNotBlank() || calls.isNotEmpty()) Turn(row.role, row.text, calls) else null
+                }
+            }
+        }
+    }
+    /** Executes one model tool call. Local problems become tool results the model can react to;
+     *  transport failures propagate as SafeFailure and abort the generation. */
+    private suspend fun executeToolCall(route: Map<String, Pair<McpToolSession, McpTool>>, call: ToolCall): String {
+        val target = route[call.name] ?: return "Инструмент «${call.name}» недоступен в этой сессии."
+        val parsed: JsonObject? = if (call.arguments.isBlank()) JsonObject(emptyMap())
+            else runCatching { json.parseToJsonElement(call.arguments) as? JsonObject }.getOrNull()
+        if (parsed == null) return "Аргументы вызова «${call.name}» не являются валидным JSON-объектом."
+        val result = target.first.callTool(target.second.name, parsed)
+        return capToolResult(result.text, result.isError)
+    }
+    private fun capToolResult(text: String, isError: Boolean): String {
+        val capped = if (text.length > TOOL_RESULT_CHARS) text.take(TOOL_RESULT_CHARS) + "\n…[результат обрезан]" else text
+        val body = capped.ifBlank { "(пустой ответ инструмента)" }
+        return if (isError) "[Ошибка инструмента] $body" else body
     }
     fun stop() { generationJob?.cancel() }
     fun saveProvider(p: Provider, newKey: String?, headers: Map<String, String>?, query: Map<String, String>?) = action {
