@@ -8,10 +8,10 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 @Entity(tableName = "chats")
-data class ChatRow(@PrimaryKey val id: String, val title: String = "Новый чат", val updated: Long = System.currentTimeMillis(), val pinned: Boolean = false, val providerId: String = "", val modelId: String = "")
+data class ChatRow(@PrimaryKey val id: String, val title: String = "Новый чат", val updated: Long = System.currentTimeMillis(), val pinned: Boolean = false, val providerId: String = "", val modelId: String = "", @ColumnInfo(defaultValue = "") val mcpServerIds: String = "")
 @Serializable
 @Entity(tableName = "messages", indices = [Index("chatId")], foreignKeys = [ForeignKey(entity = ChatRow::class, parentColumns = ["id"], childColumns = ["chatId"], onDelete = ForeignKey.CASCADE)])
-data class MessageRow(@PrimaryKey val id: String, val chatId: String, val position: Long, val role: String, val text: String, val state: String = "complete", val errorCategory: String = "")
+data class MessageRow(@PrimaryKey val id: String, val chatId: String, val position: Long, val role: String, val text: String, val state: String = "complete", val errorCategory: String = "", @ColumnInfo(defaultValue = "") val toolCalls: String = "", @ColumnInfo(defaultValue = "") val toolCallId: String = "", @ColumnInfo(defaultValue = "") val toolName: String = "")
 @Entity(tableName = "providers")
 data class ProviderRow(@PrimaryKey val id: String, val metadata: String)
 @Entity(tableName = "models", primaryKeys = ["providerId", "modelId"], indices = [Index("providerId")], foreignKeys = [ForeignKey(entity = ProviderRow::class, parentColumns = ["id"], childColumns = ["providerId"], onDelete = ForeignKey.CASCADE)])
@@ -67,7 +67,7 @@ interface AstraDao {
     @Query("UPDATE messages SET state='interrupted' WHERE state='generating'") suspend fun recoverMessages()
     @Query("UPDATE usage SET state='interrupted', estimated=1 WHERE state='generating'") suspend fun recoverUsage()
 }
-@Database(entities = [ChatRow::class, MessageRow::class, ProviderRow::class, ModelRow::class, DraftRow::class, BranchRow::class, UsageRow::class, McpServerRow::class], version = 3, exportSchema = true)
+@Database(entities = [ChatRow::class, MessageRow::class, ProviderRow::class, ModelRow::class, DraftRow::class, BranchRow::class, UsageRow::class, McpServerRow::class], version = 4, exportSchema = true)
 abstract class AstraDatabase : RoomDatabase() {
     abstract fun dao(): AstraDao
     companion object {
@@ -81,6 +81,15 @@ abstract class AstraDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `mcp_servers` (`id` TEXT NOT NULL, `metadata` TEXT NOT NULL, PRIMARY KEY(`id`))")
+            }
+        }
+        // v3 had no tool-calling columns; v4 adds per-chat MCP selection and tool-round persistence.
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chats ADD COLUMN mcpServerIds TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE messages ADD COLUMN toolCalls TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE messages ADD COLUMN toolCallId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE messages ADD COLUMN toolName TEXT NOT NULL DEFAULT ''")
             }
         }
     }
