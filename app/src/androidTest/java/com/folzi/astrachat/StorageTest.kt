@@ -37,7 +37,7 @@ class StorageTest {
         sql.execSQL("PRAGMA foreign_keys=OFF")
         sql.execSQL("CREATE TABLE messages_old AS SELECT id,chatId,position,role,text,state,errorCategory,toolCalls,toolCallId,toolName FROM messages")
         sql.execSQL("DROP TABLE messages")
-        sql.execSQL("CREATE TABLE IF NOT EXISTS `messages` (`id` TEXT NOT NULL, `chatId` TEXT NOT NULL, `position` INTEGER NOT NULL, `role` TEXT NOT NULL, `text` TEXT NOT NULL, `state` TEXT NOT NULL, `errorCategory` TEXT NOT NULL, `toolCalls` TEXT NOT NULL, `toolCallId` TEXT NOT NULL, `toolName` TEXT NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`chatId`) REFERENCES `chats`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+        sql.execSQL("CREATE TABLE IF NOT EXISTS `messages` (`id` TEXT NOT NULL, `chatId` TEXT NOT NULL, `position` INTEGER NOT NULL, `role` TEXT NOT NULL, `text` TEXT NOT NULL, `state` TEXT NOT NULL, `errorCategory` TEXT NOT NULL, `toolCalls` TEXT NOT NULL DEFAULT '', `toolCallId` TEXT NOT NULL DEFAULT '', `toolName` TEXT NOT NULL DEFAULT '', PRIMARY KEY(`id`), FOREIGN KEY(`chatId`) REFERENCES `chats`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
         sql.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_chatId` ON `messages` (`chatId`)")
         sql.execSQL("INSERT INTO messages SELECT * FROM messages_old")
         sql.execSQL("DROP TABLE messages_old")
