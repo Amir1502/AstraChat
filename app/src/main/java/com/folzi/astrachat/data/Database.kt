@@ -11,7 +11,7 @@ import kotlinx.serialization.Serializable
 data class ChatRow(@PrimaryKey val id: String, val title: String = "Новый чат", val updated: Long = System.currentTimeMillis(), val pinned: Boolean = false, val providerId: String = "", val modelId: String = "", @ColumnInfo(defaultValue = "") val mcpServerIds: String = "")
 @Serializable
 @Entity(tableName = "messages", indices = [Index("chatId")], foreignKeys = [ForeignKey(entity = ChatRow::class, parentColumns = ["id"], childColumns = ["chatId"], onDelete = ForeignKey.CASCADE)])
-data class MessageRow(@PrimaryKey val id: String, val chatId: String, val position: Long, val role: String, val text: String, val state: String = "complete", val errorCategory: String = "", @ColumnInfo(defaultValue = "") val toolCalls: String = "", @ColumnInfo(defaultValue = "") val toolCallId: String = "", @ColumnInfo(defaultValue = "") val toolName: String = "")
+data class MessageRow(@PrimaryKey val id: String, val chatId: String, val position: Long, val role: String, val text: String, val state: String = "complete", val errorCategory: String = "", @ColumnInfo(defaultValue = "") val toolCalls: String = "", @ColumnInfo(defaultValue = "") val toolCallId: String = "", @ColumnInfo(defaultValue = "") val toolName: String = "", @ColumnInfo(defaultValue = "") val attachments: String = "")
 @Entity(tableName = "providers")
 data class ProviderRow(@PrimaryKey val id: String, val metadata: String)
 @Entity(tableName = "models", primaryKeys = ["providerId", "modelId"], indices = [Index("providerId")], foreignKeys = [ForeignKey(entity = ProviderRow::class, parentColumns = ["id"], childColumns = ["providerId"], onDelete = ForeignKey.CASCADE)])
@@ -67,7 +67,7 @@ interface AstraDao {
     @Query("UPDATE messages SET state='interrupted' WHERE state='generating'") suspend fun recoverMessages()
     @Query("UPDATE usage SET state='interrupted', estimated=1 WHERE state='generating'") suspend fun recoverUsage()
 }
-@Database(entities = [ChatRow::class, MessageRow::class, ProviderRow::class, ModelRow::class, DraftRow::class, BranchRow::class, UsageRow::class, McpServerRow::class], version = 4, exportSchema = true)
+@Database(entities = [ChatRow::class, MessageRow::class, ProviderRow::class, ModelRow::class, DraftRow::class, BranchRow::class, UsageRow::class, McpServerRow::class], version = 5, exportSchema = true)
 abstract class AstraDatabase : RoomDatabase() {
     abstract fun dao(): AstraDao
     companion object {
@@ -90,6 +90,12 @@ abstract class AstraDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE messages ADD COLUMN toolCalls TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE messages ADD COLUMN toolCallId TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE messages ADD COLUMN toolName TEXT NOT NULL DEFAULT ''")
+            }
+        }
+        // v4 had no attachment metadata; v5 adds the additive messages.attachments column (JSON list, no file bytes).
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''")
             }
         }
     }

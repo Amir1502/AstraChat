@@ -32,6 +32,17 @@ class StorageTest {
         sql.execSQL("DROP TABLE messages_old")
         sql.execSQL("PRAGMA foreign_keys=ON")
     }
+    // Recreate messages in their exact v4 shape (DDL from schemas/4.json); v5 only adds attachments.
+    private fun downgradeMessagesToV4(sql: SupportSQLiteDatabase) {
+        sql.execSQL("PRAGMA foreign_keys=OFF")
+        sql.execSQL("CREATE TABLE messages_old AS SELECT id,chatId,position,role,text,state,errorCategory,toolCalls,toolCallId,toolName FROM messages")
+        sql.execSQL("DROP TABLE messages")
+        sql.execSQL("CREATE TABLE IF NOT EXISTS `messages` (`id` TEXT NOT NULL, `chatId` TEXT NOT NULL, `position` INTEGER NOT NULL, `role` TEXT NOT NULL, `text` TEXT NOT NULL, `state` TEXT NOT NULL, `errorCategory` TEXT NOT NULL, `toolCalls` TEXT NOT NULL, `toolCallId` TEXT NOT NULL, `toolName` TEXT NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`chatId`) REFERENCES `chats`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+        sql.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_chatId` ON `messages` (`chatId`)")
+        sql.execSQL("INSERT INTO messages SELECT * FROM messages_old")
+        sql.execSQL("DROP TABLE messages_old")
+        sql.execSQL("PRAGMA foreign_keys=ON")
+    }
     @Test fun branchesAndBackupsDoNotOverwriteOriginals() = runBlocking<Unit> {
         // Room 2.8 RoomDatabase no longer implements Closeable, so kotlin.use does not apply.
         val db = Room.inMemoryDatabaseBuilder(context, AstraDatabase::class.java).build()
@@ -65,7 +76,7 @@ class StorageTest {
         downgradeChatTablesToV3(sql)
         sql.execSQL("PRAGMA user_version=1"); original.close()
         val migrated = Room.databaseBuilder(context, AstraDatabase::class.java, name)
-            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4).build()
+            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4, AstraDatabase.MIGRATION_4_5).build()
         try {
             migrated.openHelper.readableDatabase.query("SELECT total,state FROM usage WHERE requestId='request'").use { cursor ->
                 assertTrue(cursor.moveToFirst()); assertEquals(30, cursor.getInt(0)); assertEquals("complete", cursor.getString(1))
@@ -83,7 +94,7 @@ class StorageTest {
         downgradeChatTablesToV3(sql)
         sql.execSQL("PRAGMA user_version=2"); original.close()
         val migrated = Room.databaseBuilder(context, AstraDatabase::class.java, name)
-            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4).build()
+            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4, AstraDatabase.MIGRATION_4_5).build()
         try {
             assertEquals("История", migrated.dao().chat("chat-1")?.title)
             migrated.dao().saveMcpServer(McpServerRow("server-1", """{"id":"server-1","name":"Test","url":"https://example.com/mcp"}"""))
@@ -101,13 +112,39 @@ class StorageTest {
         downgradeChatTablesToV3(sql)
         sql.execSQL("PRAGMA user_version=3"); original.close()
         val migrated = Room.databaseBuilder(context, AstraDatabase::class.java, name)
-            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4).build()
+            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4, AstraDatabase.MIGRATION_4_5).build()
         try {
             val chat = migrated.dao().chat("chat-1")
             assertEquals("История", chat?.title); assertEquals("", chat?.mcpServerIds)
             val message = migrated.dao().history("chat-1").single()
             assertEquals("Sunny", message.text); assertEquals("tool", message.role)
             assertEquals("", message.toolCallId); assertEquals("", message.toolName); assertEquals("", message.toolCalls)
+        } finally { migrated.close() }
+        context.deleteDatabase(name)
+    }
+    @Test fun migrationV4ToV5AddsAttachmentsAndPreservesData() = runBlocking<Unit> {
+        val name = "migration-v5-test.db"; context.deleteDatabase(name)
+        val original = Room.databaseBuilder(context, AstraDatabase::class.java, name).build()
+        original.dao().saveChat(ChatRow("chat-1", "Чат"))
+        original.dao().saveMessage(MessageRow("msg-1", "chat-1", 0, "user", "Файл?", attachments = """[{"id":"a1","name":"photo.png","mimeType":"image/png","sizeBytes":3}]"""))
+        assertTrue(original.dao().history("chat-1").single().attachments.contains("photo.png"))
+        original.close()
+        val downgrade = Room.databaseBuilder(context, AstraDatabase::class.java, name)
+            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4, AstraDatabase.MIGRATION_4_5)
+            .build()
+        downgrade.openHelper.writableDatabase.apply {
+            downgradeMessagesToV4(this)
+            execSQL("PRAGMA user_version=4")
+        }
+        downgrade.close()
+        val migrated = Room.databaseBuilder(context, AstraDatabase::class.java, name)
+            .addMigrations(AstraDatabase.MIGRATION_1_2, AstraDatabase.MIGRATION_2_3, AstraDatabase.MIGRATION_3_4, AstraDatabase.MIGRATION_4_5)
+            .build()
+        try {
+            val message = migrated.dao().history("chat-1").single()
+            // Text survives the surgical v4 downgrade; the attachments column returns with its empty default.
+            assertEquals("Файл?", message.text); assertEquals("user", message.role)
+            assertEquals("", message.attachments)
         } finally { migrated.close() }
         context.deleteDatabase(name)
     }

@@ -30,10 +30,10 @@ class ChatRepository @Inject constructor(val db: AstraDatabase) {
     suspend fun saveModel(m: Model) { dao.saveModel(ModelRow(m.providerId, m.id, json.encodeToString(m))) }
     suspend fun removeChat(id: String) = db.withTransaction { dao.deleteBranches(id); dao.deleteChat(id) }
     suspend fun clearChats() = db.withTransaction { dao.clearBranches(); dao.clearChats() }
-    suspend fun appendExchange(chatId: String, input: String, providerId: String, modelId: String): MessageRow = db.withTransaction {
+    suspend fun appendExchange(chatId: String, input: String, providerId: String, modelId: String, attachmentsJson: String = ""): MessageRow = db.withTransaction {
         val chat = requireNotNull(dao.chat(chatId))
         val position = (dao.history(chatId).lastOrNull()?.position ?: -1) + 1
-        dao.saveMessage(MessageRow(newId(), chatId, position, "user", input))
+        dao.saveMessage(MessageRow(newId(), chatId, position, "user", input, attachments = attachmentsJson))
         val assistant = MessageRow(newId(), chatId, position + 1, "assistant", "", "generating")
         dao.saveMessage(assistant); dao.saveDraft(DraftRow(chatId, ""))
         dao.saveChat(chat.copy(title = if (chat.title == "Новый чат") input.take(60) else chat.title,
@@ -70,7 +70,9 @@ class ChatRepository @Inject constructor(val db: AstraDatabase) {
         val messages = dao.allMessages().groupBy { it.chatId }
         dao.allChats().joinToString("\n\n---\n\n") { chat ->
             "# ${chat.title.replace('\n', ' ')}\n\n" + messages[chat.id].orEmpty().joinToString("\n\n") {
-                "## ${when (it.role) { "user" -> "Вы"; "tool" -> "Инструмент" + if (it.toolName.isNotBlank()) " · ${it.toolName}" else ""; else -> "Astra" }}\n\n${it.text}"
+                val files = parseAttachments(it.attachments)
+                val suffix = if (files.isEmpty()) "" else "\n\nВложения: " + files.joinToString(", ") { file -> file.name }
+                "## ${when (it.role) { "user" -> "Вы"; "tool" -> "Инструмент" + if (it.toolName.isNotBlank()) " · ${it.toolName}" else ""; else -> "Astra" }}\n\n${it.text}$suffix"
             }
         }
     }
