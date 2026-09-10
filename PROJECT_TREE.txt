@@ -14,11 +14,13 @@ app/proguard-rules.pro
 app/schemas/com.folzi.astrachat.data.AstraDatabase/2.json
 app/schemas/com.folzi.astrachat.data.AstraDatabase/3.json
 app/schemas/com.folzi.astrachat.data.AstraDatabase/4.json
+app/schemas/com.folzi.astrachat.data.AstraDatabase/5.json
 app/src/androidTest/java/com/folzi/astrachat/ComposeSmokeTest.kt
 app/src/androidTest/java/com/folzi/astrachat/StorageTest.kt
 app/src/main/AndroidManifest.xml
 app/src/main/java/com/folzi/astrachat/AstraApplication.kt
 app/src/main/java/com/folzi/astrachat/MainActivity.kt
+app/src/main/java/com/folzi/astrachat/data/AttachmentStore.kt
 app/src/main/java/com/folzi/astrachat/data/ChatRepository.kt
 app/src/main/java/com/folzi/astrachat/data/Database.kt
 app/src/main/java/com/folzi/astrachat/data/McpRepository.kt
@@ -43,6 +45,7 @@ config/detekt.yml
 core/build.gradle.kts
 core/src/main/java/com/folzi/astrachat/core/SseReader.java
 core/src/main/java/com/folzi/astrachat/core/TokenMath.java
+core/src/main/kotlin/com/folzi/astrachat/core/Attachments.kt
 core/src/main/kotlin/com/folzi/astrachat/core/Mcp.kt
 core/src/main/kotlin/com/folzi/astrachat/core/McpClient.kt
 core/src/main/kotlin/com/folzi/astrachat/core/Models.kt
