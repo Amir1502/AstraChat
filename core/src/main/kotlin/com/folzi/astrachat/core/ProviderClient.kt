@@ -56,17 +56,19 @@ class ProviderClient(private val base: OkHttpClient = OkHttpClient()) : ChatGate
                     if (!p.streaming) {
                         val content = body.source().readUtf8Limited(4L * 1024 * 1024)
                         val chunk = ProviderCodec.decode(p.protocol, "", content, false)
-                        if (chunk.text.isEmpty()) throw SafeFailure(FailureKind.MALFORMED)
+                        if (chunk.text.isEmpty() && chunk.toolCalls.isEmpty()) throw SafeFailure(FailureKind.MALFORMED)
                         send(chunk)
                     } else {
                         if (!response.header("Content-Type").orEmpty().contains("text/event-stream", true)) throw SafeFailure(FailureKind.MALFORMED)
                         val reader = SseReader(body.charStream(), 2 * 1024 * 1024)
+                        val acc = ToolCallAccumulator()
                         var ended = false
                         while (true) {
                             ensureActive()
                             val event = reader.next() ?: break
                             val chunk = ProviderCodec.decode(p.protocol, event.event(), event.data())
-                            send(chunk)
+                            acc.add(chunk.toolFragments)
+                            send(if (chunk.terminal) chunk.copy(toolCalls = acc.result()) else chunk)
                             ended = ended || chunk.terminal
                             // Gemini may include final usage in a subsequent frame; drain to EOF.
                             if (chunk.terminal && p.protocol != Protocol.GEMINI) break
@@ -112,6 +114,21 @@ class ProviderClient(private val base: OkHttpClient = OkHttpClient()) : ChatGate
             pages++
         } while (page.isNotBlank() && pages < 20)
         result.distinct().sorted()
+    }
+}
+
+/** Assembles OpenAI streaming tool_call fragments by index across SSE events. */
+internal class ToolCallAccumulator {
+    private class Entry { var id = ""; var name = ""; val args = StringBuilder() }
+    private val entries = LinkedHashMap<Int, Entry>()
+    fun add(fragments: List<ToolCallFragment>) = fragments.forEach { f ->
+        val entry = entries.getOrPut(f.index) { Entry() }
+        if (f.id.isNotBlank()) entry.id = f.id
+        if (f.name.isNotBlank()) entry.name = f.name
+        entry.args.append(f.argumentsDelta)
+    }
+    fun result(): List<ToolCall> = entries.toSortedMap().values.mapNotNull { e ->
+        if (e.id.isNotBlank() && e.name.isNotBlank()) ToolCall(e.id, e.name, e.args.toString()) else null
     }
 }
 internal fun okio.BufferedSource.readUtf8Limited(limit: Long): String {

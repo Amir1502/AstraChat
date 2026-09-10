@@ -68,4 +68,29 @@ class NetworkTest {
         assertEquals(FailureKind.MODEL, httpFailure(404, "").kind)
         assertEquals(FailureKind.RATE_LIMIT, httpFailure(429, "").kind)
     }
+    @Test fun streamingAssemblesFragmentedToolCalls() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Moscow\\\"}\"}}]}}]}\n\n" +
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4}}\n\n" +
+                "data: [DONE]\n\n"))
+            val events = ProviderClient().generate(request(server)).toList()
+            assertTrue(events.last().terminal)
+            assertEquals(listOf(ToolCall("call_1", "get_weather", """{"city":"Moscow"}""")), events.last().toolCalls)
+            assertEquals(9L, events[events.size - 2].usage.input)
+        }
+    }
+    @Test fun nonStreamingToolCallsWithoutTextAccepted() = runBlocking {
+        MockWebServer().use { server ->
+            val base = request(server)
+            val quiet = base.copy(provider = base.provider.copy(streaming = false))
+            server.enqueue(MockResponse().setHeader("Content-Type", "application/json")
+                .setBody("""{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"""))
+            val chunk = ProviderClient().generate(quiet).toList().single()
+            assertEquals(listOf(ToolCall("c1", "f", "{}")), chunk.toolCalls)
+            assertTrue(chunk.terminal); assertEquals(3L, chunk.usage.input)
+        }
+    }
 }
